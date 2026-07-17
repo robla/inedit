@@ -481,6 +481,67 @@ class PtyIntegrationTests(unittest.TestCase):
         b"\x1b[?47h",
     )
 
+    @staticmethod
+    def terminal_updates_contain(output: bytes, expected: bytes) -> bool:
+        """Match text in a VT update stream, including retained screen cells."""
+        operations: list[tuple[str, int]] = []
+        index = 0
+        while index < len(output):
+            if output[index : index + 2] == b"\x1b[":
+                end = index + 2
+                while end < len(output) and not 0x40 <= output[end] <= 0x7E:
+                    end += 1
+                if end == len(output):
+                    break
+                final = output[end]
+                parameters = output[index + 2 : end]
+                if final == ord("C"):
+                    try:
+                        count = int(parameters.split(b";", 1)[0] or b"1")
+                    except ValueError:
+                        count = 1
+                    operations.append(("forward", count))
+                elif final not in b"mhl":
+                    operations.append(("break", 0))
+                index = end + 1
+                continue
+            byte = output[index]
+            if 0x20 <= byte <= 0xFF and byte != 0x7F:
+                operations.append(("character", byte))
+            elif byte in b"\r\n\b":
+                operations.append(("break", 0))
+            index += 1
+
+        for start, operation in enumerate(operations):
+            if operation != ("character", expected[0]):
+                continue
+            expected_index = 0
+            for kind, value in operations[start:]:
+                if kind == "break":
+                    break
+                if kind == "forward":
+                    expected_index += value
+                    if expected_index > len(expected):
+                        break
+                elif expected_index >= len(expected) or value != expected[expected_index]:
+                    break
+                else:
+                    expected_index += 1
+                if expected_index == len(expected):
+                    return True
+        return False
+
+    def test_terminal_update_matcher_accepts_retained_screen_cells(self) -> None:
+        expected = b"Save modified buffer?"
+        incremental_update = b"Save mod\x1b[Cfied buffer?"
+
+        self.assertTrue(
+            self.terminal_updates_contain(incremental_update, expected)
+        )
+        self.assertFalse(
+            self.terminal_updates_contain(b"Save\x1b[79C", expected)
+        )
+
     def run_pty_case(
         self, initial: bytes | None, action: str
     ) -> tuple[int, bytes, bytes | None, bool]:
@@ -530,7 +591,10 @@ class PtyIntegrationTests(unittest.TestCase):
             def read_until(marker: bytes) -> None:
                 nonlocal answered_cursor_position_request
                 deadline = time.monotonic() + 5
-                while marker not in captured and time.monotonic() < deadline:
+                while (
+                    not self.terminal_updates_contain(captured, marker)
+                    and time.monotonic() < deadline
+                ):
                     readable, _, _ = select.select([master], [], [], 0.1)
                     if readable:
                         output = os.read(master, 65536)
@@ -541,7 +605,10 @@ class PtyIntegrationTests(unittest.TestCase):
                         ):
                             os.write(master, b"\x1b[2;1R")
                             answered_cursor_position_request = True
-                self.assertIn(marker, captured)
+                self.assertTrue(
+                    self.terminal_updates_contain(captured, marker),
+                    f"{marker!r} was not rendered by terminal updates {captured!r}",
+                )
 
             try:
                 read_until(b"^S Save")
@@ -636,7 +703,11 @@ class PtyIntegrationTests(unittest.TestCase):
 
         self.assertEqual(prompted[0], 0)
         self.assertEqual(prompted[2], b"xoriginal")
-        self.assertIn(b"Save modified buffer?", prompted[1])
+        self.assertTrue(
+            self.terminal_updates_contain(
+                prompted[1], b"Save modified buffer?"
+            )
+        )
         self.assert_rendering_contract(prompted[1], prompted[3])
 
 
