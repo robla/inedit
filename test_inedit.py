@@ -287,7 +287,7 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertTrue(status_line.startswith("…"))
         self.assertIn("Ln 1, Col 1", status_line)
         self.assertIn("^G Help", status_line)
-        self.assertTrue(status_line.endswith("^S Save | ^X Exit | ^C Cancel"))
+        self.assertTrue(status_line.endswith("^S Save | ^X/^C Exit"))
 
         state.help_visible = True
         help_status = inedit.format_status(state, "", 0, 0, 80)
@@ -299,9 +299,9 @@ class LayoutAndStateTests(unittest.TestCase):
 
     def test_ctrl_s_saves_without_exiting(self) -> None:
         path = self.directory / "new.txt"
-        result, _editor = self.run_editor(path, "hello\nworld\x13\x03")
-        self.assertIs(result.reason, inedit.ExitReason.CANCELED)
-        self.assertEqual(path.read_bytes(), b"hello\nworld")
+        result, _editor = self.run_editor(path, "hello\nworld\x13!\x18y")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_bytes(), b"hello\nworld!")
 
     def test_unchanged_save_does_not_replace_file(self) -> None:
         path = self.directory / "unchanged.txt"
@@ -314,24 +314,22 @@ class LayoutAndStateTests(unittest.TestCase):
             (after.st_ino, after.st_mtime_ns), (before.st_ino, before.st_mtime_ns)
         )
 
-    def test_unchanged_cancel_is_immediate(self) -> None:
+    def test_unchanged_ctrl_c_exits_successfully(self) -> None:
         path = self.directory / "unchanged.txt"
         path.write_text("unchanged", encoding="utf-8")
         result, _editor = self.run_editor(path, "\x03")
-        self.assertIs(result.reason, inedit.ExitReason.CANCELED)
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "unchanged")
 
-    def test_modified_cancel_requires_two_ctrl_c_presses(self) -> None:
-        path = self.directory / "unchanged.txt"
-        path.write_text("unchanged", encoding="utf-8")
-        result, editor = self.run_editor(path, "x\x03\x03")
-        self.assertIs(result.reason, inedit.ExitReason.CANCELED)
-        self.assertEqual(editor.state.message, inedit.DISCARD_MESSAGE)
-        self.assertEqual(path.read_text(encoding="utf-8"), "unchanged")
-
-    def test_edit_disarms_discard_confirmation(self) -> None:
+    def test_ctrl_c_saves_modified_buffer_on_yes(self) -> None:
         path = self.directory / "new.txt"
-        result, _editor = self.run_editor(path, "x\x03y\x03\x13\x18")
+        result, _editor = self.run_editor(path, "hello\x03y")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "hello")
+
+    def test_second_ctrl_c_cancels_prompt_instead_of_discarding(self) -> None:
+        path = self.directory / "new.txt"
+        result, _editor = self.run_editor(path, "x\x03\x03y\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "xy")
 
@@ -419,7 +417,7 @@ class LayoutAndStateTests(unittest.TestCase):
                 input=pipe,
                 output=DummyOutput(),
             )
-            pipe.send_text("x\x13\x03\x03")
+            pipe.send_text("x\x13\x03n")
             result = editor.application.run(set_exception_handler=False)
         self.assertIs(result.reason, inedit.ExitReason.CANCELED)
         self.assertEqual(path.read_text(encoding="utf-8"), "external")
@@ -550,7 +548,7 @@ class PtyIntegrationTests(unittest.TestCase):
                 if action == "save":
                     os.write(master, b"alpha\nbeta\x13\x18")
                 elif action == "cancel":
-                    os.write(master, b"x\x03\x03")
+                    os.write(master, b"x\x03n")
                 elif action == "help":
                     os.write(master, b"\x07")
                     read_until(b"inedit help")

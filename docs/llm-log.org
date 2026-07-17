@@ -24,3 +24,4 @@ Conventions:
 ** Codex [2026-07-17 Fri 01:31 PDT]: Implemented inline =Ctrl-G= help, Nano-style line cut/copy/paste, Emacs-style region and kill-ring operations, and updated key hints and tests.
 ** Codex [2026-07-17 Fri 01:50 PDT]: Simplified editing around prompt-toolkit's native Emacs bindings and replaced kill-ring history with a one-entry internal clipboard.
 ** Codex [2026-07-17 Fri 02:06 PDT]: Added Nano/Pico-style =Ctrl-X= prompted exit, changed =Ctrl-S= to save without exiting, and retained =Ctrl-C= as a reserved legacy cancel command.
+** Codex [2026-07-17 Fri 02:27 PDT]: Made main-screen =Ctrl-C= use the same clean-or-prompted exit behavior as =Ctrl-X= and removed the reachable double-=Ctrl-C= discard path.

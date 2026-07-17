@@ -208,10 +208,9 @@ Register a buffer text-change callback. On every actual edit it must:
 
 Let prompt_toolkit provide arrows, Home, End, deletion, newline insertion, vi
 navigation, and viewport movement. Add eager global bindings for Ctrl-S,
-Ctrl-X, Ctrl-C, and Ctrl-G so save, exit, cancel, and help do not depend on
-editing mode. In the default mode, let prompt-toolkit own selection, cutting,
-copying, and yanking. Add only `Ctrl-Z` undo and `Alt-E` redo as editing
-conveniences.
+Ctrl-X, Ctrl-C, and Ctrl-G so save, exit, and help do not depend on editing
+mode. In the default mode, let prompt-toolkit own selection, cutting, copying,
+and yanking. Add only `Ctrl-Z` undo and `Alt-E` redo as editing conveniences.
 
 Ctrl-S follows one path:
 
@@ -226,14 +225,16 @@ Ctrl-S follows one path:
 4. On `SaveError`, remain in the editor, put the concise error in the status
    state, disarm discard confirmation, and redraw.
 
-Ctrl-X exits immediately with `SAVED` when the buffer is unchanged. When it is
-modified, set `exit_prompt` and make the editing `TextArea` temporarily
-read-only. Render `Save modified buffer? Y Yes | N No | ^C Cancel` in the
-status row. `Y` uses the Ctrl-S save path and exits with `SAVED`, `N` exits with
-`CANCELED` without writing, and Ctrl-C clears the prompt and returns to the
-same editing buffer. Ignore other printable answers.
+Ctrl-X and main-screen Ctrl-C share the same exit request. They exit
+immediately with `SAVED` when the buffer is unchanged. When it is modified,
+set `exit_prompt` and make the editing `TextArea` temporarily read-only. Render
+`Save modified buffer? Y Yes | N No | ^C Cancel` in the status row. `Y` uses
+the Ctrl-S save path and exits with `SAVED`, `N` exits with `CANCELED` without
+writing, and Ctrl-C clears the prompt and returns to the same editing buffer.
+Ignore other printable answers. In particular, Ctrl-C Ctrl-C must never
+discard changes.
 
-Ctrl-C is a three-state transition:
+A real SIGINT remains a separate safe-cancellation transition:
 
 ```text
 unmodified              -> CANCELED
@@ -242,9 +243,7 @@ modified, already armed -> CANCELED
 ```
 
 Any buffer edit moves the armed state back to not armed. Cursor movement does
-not, so the second Ctrl-C remains usable after inspecting nearby text.
-Ctrl-C is reserved for possible future Nano alignment; do not expand this
-main-screen behavior. Its prompt-local meaning remains “return to editing.”
+not, so a second SIGINT remains usable after inspecting nearby text.
 
 ### Prompt-toolkit-aligned keymap
 
@@ -257,7 +256,7 @@ newline, undo, and clipboard edge cases.
 `inedit` explicitly owns:
 
 - `Ctrl-G` help;
-- `Ctrl-X` prompted exit and `Ctrl-S` save-without-exit;
+- equivalent `Ctrl-X`/Ctrl-C prompted exit and `Ctrl-S` save-without-exit;
 - `Ctrl-Z` undo and `Alt-E` redo; and
 - the `inedit` save and safe-exit operations that protect the file lifecycle.
 
@@ -267,9 +266,6 @@ provide selection and clipboard operations with a single latest value rather
 than a kill-ring history. Do not advertise `Alt-Y` yank-pop. Keep internal
 yank and external system-clipboard paste as separate operations even if a
 later integration lets a cut populate both.
-
-The current `Ctrl-C` safe-cancel behavior remains in force but is explicitly
-reserved for future Nano alignment.
 
 Keep the explicit binding surface small. Test the prompt-toolkit commands on
 which the public guide relies, but avoid wrapping or copying their handlers.
@@ -283,7 +279,7 @@ buffer document, modified state, message, and key reminder. Use one-based
 logical line and column numbers. The stable right side is:
 
 ```text
-Ln N, Col N | modified/unchanged | ^G Help | ^S Save | ^X Exit | ^C Cancel
+Ln N, Col N | modified/unchanged | ^G Help | ^S Save | ^X/^C Exit
 ```
 
 Place a save error or discard reminder before that stable suffix. Calculate
@@ -339,8 +335,9 @@ ACLs, or ownership beyond what the process and operating system provide.
 ## Signals, exceptions, and exit statuses
 
 Run the application inside a narrow exception boundary. Ctrl-C input is
-handled by the key binding. A real `SIGINT` or `KeyboardInterrupt` cancels
-without saving and returns 130. Temporarily install `SIGTERM` and `SIGHUP`
+handled by the shared exit binding. A real `SIGINT` follows the separate safe
+signal-cancellation path; `KeyboardInterrupt` cancels without saving and
+returns 130. Temporarily install `SIGTERM` and `SIGHUP`
 handlers that raise a private termination exception; unwinding through
 `Application.run()` lets prompt_toolkit's `finally` blocks restore terminal
 modes and the cursor. Restore the process's previous handlers afterward.
@@ -373,8 +370,8 @@ Use temporary directories for every filesystem test. Unit-test:
 - conflict detection for content changes, replacement, deletion, creation,
   and symlink retargeting;
 - temporary-file cleanup on write, fsync, and replace failures;
-- dirty-state reversal through undo, the two-stage Ctrl-C discard state
-  machine, and the Ctrl-X `Y`/`N`/Ctrl-C prompt;
+- dirty-state reversal through undo, the two-stage SIGINT state machine, and
+  the shared Ctrl-X/Ctrl-C `Y`/`N`/Ctrl-C prompt;
 - exact exit-status mapping.
 
 Use prompt_toolkit pipe input and dummy output for key-binding tests. Send text,

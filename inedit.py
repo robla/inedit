@@ -32,14 +32,14 @@ from prompt_toolkit.widgets import TextArea
 
 DEFAULT_HEIGHT = 20
 MINIMUM_HEIGHT = 4
-DISCARD_MESSAGE = "Unsaved changes; Ctrl-C again to discard"
+SIGNAL_DISCARD_MESSAGE = "Unsaved changes; interrupt again to discard"
 EXIT_PROMPT = "Save modified buffer? Y Yes | N No | ^C Cancel"
 HELP_TEXT = """inedit help
 
 File
   Ctrl-X        Exit; prompt to save when modified
   Ctrl-S        Save and continue editing
-  Ctrl-C        Cancel (current behavior; reserved for future alignment)
+  Ctrl-C        Same as Ctrl-X; cancel an active exit prompt
   Ctrl-G        Close this help
 
 Clipboard and selection
@@ -565,7 +565,7 @@ def format_status(
     help_action = "^G Close" if state.help_visible else "^G Help"
     suffix = (
         f"Ln {cursor_row + 1}, Col {cursor_column + 1} | {modified} | "
-        f"{help_action} | ^S Save | ^X Exit | ^C Cancel"
+        f"{help_action} | ^S Save | ^X/^C Exit"
     )
     separator = " | "
 
@@ -666,10 +666,7 @@ def build_application(
     def save(event: Any) -> None:
         save_buffer(event)
 
-    @bindings.add("c-x", eager=True, save_before=lambda _event: False)
-    def exit_editor(event: Any) -> None:
-        if state.exit_prompt:
-            return
+    def request_exit(event: Any) -> None:
         if state.help_visible:
             state.help_visible = False
             event.app.layout.focus(text_area)
@@ -681,9 +678,22 @@ def build_application(
         else:
             event.app.exit(result=EditorResult(ExitReason.SAVED))
 
-    @bindings.add("c-c", eager=True)
+    @bindings.add("c-x", eager=True, save_before=lambda _event: False)
+    def exit_editor(event: Any) -> None:
+        if not state.exit_prompt:
+            request_exit(event)
+
+    @bindings.add("c-c", eager=True, save_before=lambda _event: False)
+    def ctrl_c_exit(event: Any) -> None:
+        if state.exit_prompt:
+            state.exit_prompt = False
+            state.message = None
+            event.app.invalidate()
+        else:
+            request_exit(event)
+
     @bindings.add(Keys.SIGINT, eager=True)
-    def cancel(event: Any) -> None:
+    def signal_cancel(event: Any) -> None:
         if state.exit_prompt:
             state.exit_prompt = False
             state.message = None
@@ -695,7 +705,7 @@ def build_application(
             event.app.exit(result=EditorResult(ExitReason.CANCELED))
         else:
             state.discard_armed = True
-            state.message = DISCARD_MESSAGE
+            state.message = SIGNAL_DISCARD_MESSAGE
             event.app.invalidate()
 
     @bindings.add(

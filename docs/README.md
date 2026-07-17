@@ -34,7 +34,7 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 |---|---|
 | `Ctrl-X` | Exit; prompt to save if the buffer is modified |
 | `Ctrl-S` | Save and continue editing |
-| `Ctrl-C` | Cancel using the current safe-cancel behavior |
+| `Ctrl-C` | Same exit behavior as `Ctrl-X` |
 | `Ctrl-G` | Open or close the inline help view |
 | `Enter` | Insert a newline |
 | `Ctrl-Z`, `Ctrl-_` | Undo |
@@ -45,19 +45,16 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 | `PageUp`, `PageDown` | Move by a viewport |
 | `Backspace`, `Delete` | Delete without changing the internal clipboard |
 
-If the buffer is unchanged, `Ctrl-C` cancels immediately. After an edit, press
-`Ctrl-C` twice to discard changes. The first press displays `Unsaved changes;
-Ctrl-C again to discard`. Editing the buffer disarms that confirmation.
-
-`Ctrl-X` is the normal exit command. An unchanged buffer exits immediately. A
-modified buffer displays `Save modified buffer? Y Yes | N No | ^C Cancel`:
+`Ctrl-X` and `Ctrl-C` are equivalent main-screen exit commands. An unchanged
+buffer exits immediately. A modified buffer displays
+`Save modified buffer? Y Yes | N No | ^C Cancel`:
 
 - `Y` saves and exits;
 - `N` exits without saving; and
 - `Ctrl-C` cancels the prompt and returns to editing.
 
-The main editor's `Ctrl-C` behavior is intentionally unchanged for now. The
-key is reserved, however, and may later adopt Nano's cursor-position behavior.
+Thus, `Ctrl-C Ctrl-C` cannot discard the buffer: the first press opens the
+prompt and the second returns to editing.
 
 ## Cutting, copying, and yanking
 
@@ -96,8 +93,8 @@ This keeps selection boundaries, final-newline handling, cursor placement,
 undo grouping, and clipboard behavior inside the library that owns the
 buffer.
 
-`inedit` currently adds `Ctrl-G` help, `Ctrl-X` prompted exit, `Ctrl-S` save,
-`Ctrl-C` safe cancel, `Ctrl-Z` undo, and `Alt-E` redo. System-clipboard support
+`inedit` currently adds `Ctrl-G` help, equivalent `Ctrl-X`/`Ctrl-C` prompted
+exit, `Ctrl-S` save, `Ctrl-Z` undo, and `Alt-E` redo. System-clipboard support
 is a separate concern and must not silently replace the one-entry internal
 clipboard.
 
@@ -124,9 +121,9 @@ Long lines scroll horizontally rather than wrapping.
 ## Vi mode
 
 With `--vi`, prompt-toolkit supplies vi insert and normal modes. `Escape`
-returns to normal mode. `Ctrl-S` and `Ctrl-C` keep their global save and cancel
-meanings, and `Ctrl-X` remains the global prompted exit command. Version 1 has
-no Ex command line, so commands such as `:wq` are not available.
+returns to normal mode. `Ctrl-S` keeps its global save meaning, while `Ctrl-X`
+and `Ctrl-C` remain equivalent global exit commands. Version 1 has no Ex
+command line, so commands such as `:wq` are not available.
 
 ## File and save behavior
 
@@ -144,7 +141,7 @@ no Ex command line, so commands such as `:wq` are not available.
 
 | Status | Meaning |
 |---|---|
-| `0` | Exited with `Ctrl-X` after saving or with an unchanged buffer |
+| `0` | Exited with `Ctrl-X` or `Ctrl-C` after saving or with an unchanged buffer |
 | `1` | Load, terminal, encoding, or runtime error |
 | `2` | Command-line usage error |
 | `130` | Exited through cancellation or `N`; any earlier `Ctrl-S` save remains on disk |
