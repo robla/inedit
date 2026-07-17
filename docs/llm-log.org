@@ -1,0 +1,20 @@
+#+TITLE: inedit LLM log
+
+* About this log
+A running work log for =inedit=. Each entry is a single line:
+
+: ** Name [YYYY-MM-DD Ddd HH:MM TZ]: short description of the substantive change
+
+Use =~/docs/llmguidelines/README.md= for guidance. Use =git log= to
+reconstruct a (best-effort) log if one does not exist.
+
+Conventions:
+- One entry per substantive repository edit, newest last.
+- Speakers are the assisting models: ChatGPT, Codex, Gemini, Claude.
+- Use current local time for new entries; derive older timestamps from
+  =git log= or another explicit source, or mark them unknown.
+- If the log is bootstrapped retroactively from git history, say so in the
+  first entry rather than implying the notes were written at the time.
+
+* LLM log
+** Codex [2026-07-16 Thu 23:12 PDT]: Initialized the editor specification, implementation architecture, and project LLM log.
