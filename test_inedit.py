@@ -204,6 +204,35 @@ class DocumentTests(unittest.TestCase):
                 inedit.save_document(document, text)
         self.assertEqual(path.read_text(encoding="utf-8"), "original")
 
+    def test_returned_snapshot_allows_repeated_saves_through_symlink(self) -> None:
+        target = self.directory / "target.txt"
+        target.write_text("original", encoding="utf-8")
+        link = self.directory / "link.txt"
+        link.symlink_to(target.name)
+
+        document = inedit.load_document(link)
+        document = inedit.save_document(document, "first")
+        document = inedit.save_document(document, "second")
+
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(target.read_text(encoding="utf-8"), "second")
+        self.assertEqual(document.text, "second")
+
+    def test_returned_snapshot_handles_symlinked_parent_directory(self) -> None:
+        real_directory = self.directory / "real"
+        real_directory.mkdir()
+        alias_directory = self.directory / "alias"
+        alias_directory.symlink_to(real_directory.name, target_is_directory=True)
+        path = alias_directory / "file.txt"
+        path.write_text("original", encoding="utf-8")
+
+        document = inedit.load_document(path)
+        document = inedit.save_document(document, "first")
+        document = inedit.save_document(document, "second")
+
+        self.assertEqual(path.read_text(encoding="utf-8"), "second")
+        self.assertEqual(document.text, "second")
+
 
 class LayoutAndStateTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -258,23 +287,27 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertTrue(status_line.startswith("…"))
         self.assertIn("Ln 1, Col 1", status_line)
         self.assertIn("^G Help", status_line)
-        self.assertTrue(status_line.endswith("^S Save | ^C Cancel"))
+        self.assertTrue(status_line.endswith("^S Save | ^X Exit | ^C Cancel"))
 
         state.help_visible = True
         help_status = inedit.format_status(state, "", 0, 0, 80)
         self.assertIn("^G Close", help_status)
 
-    def test_multiline_edit_saves(self) -> None:
+        state.exit_prompt = True
+        prompt_status = inedit.format_status(state, "changed", 0, 0, 80)
+        self.assertEqual(prompt_status, inedit.EXIT_PROMPT)
+
+    def test_ctrl_s_saves_without_exiting(self) -> None:
         path = self.directory / "new.txt"
-        result, _editor = self.run_editor(path, "hello\nworld\x13")
-        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        result, _editor = self.run_editor(path, "hello\nworld\x13\x03")
+        self.assertIs(result.reason, inedit.ExitReason.CANCELED)
         self.assertEqual(path.read_bytes(), b"hello\nworld")
 
     def test_unchanged_save_does_not_replace_file(self) -> None:
         path = self.directory / "unchanged.txt"
         path.write_text("unchanged", encoding="utf-8")
         before = path.stat()
-        result, _editor = self.run_editor(path, "\x13")
+        result, _editor = self.run_editor(path, "\x13\x18")
         after = path.stat()
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(
@@ -298,26 +331,26 @@ class LayoutAndStateTests(unittest.TestCase):
 
     def test_edit_disarms_discard_confirmation(self) -> None:
         path = self.directory / "new.txt"
-        result, _editor = self.run_editor(path, "x\x03y\x03\x13")
+        result, _editor = self.run_editor(path, "x\x03y\x03\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "xy")
 
     def test_ctrl_z_and_alt_e_undo_and_redo(self) -> None:
         path = self.directory / "new.txt"
-        result, _editor = self.run_editor(path, "x\x1a\x1be\x13")
+        result, _editor = self.run_editor(path, "x\x1a\x1be\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "x")
 
     def test_alt_u_retains_prompt_toolkit_uppercase_word(self) -> None:
         path = self.directory / "word.txt"
         path.write_text("word", encoding="utf-8")
-        result, _editor = self.run_editor(path, "\x1bu\x13")
+        result, _editor = self.run_editor(path, "\x1bu\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "WORD")
 
     def test_ctrl_g_toggles_help_without_changing_the_buffer(self) -> None:
         path = self.directory / "new.txt"
-        result, editor = self.run_editor(path, "x\x07\x07y\x13")
+        result, editor = self.run_editor(path, "x\x07\x07y\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "xy")
         self.assertFalse(editor.state.help_visible)
@@ -327,7 +360,7 @@ class LayoutAndStateTests(unittest.TestCase):
     def test_ctrl_w_cuts_a_region_and_ctrl_y_yanks_it(self) -> None:
         path = self.directory / "region.txt"
         path.write_text("alpha beta", encoding="utf-8")
-        keys = "\x00" + "\x06" * 5 + "\x17\x05\x19\x13"
+        keys = "\x00" + "\x06" * 5 + "\x17\x05\x19\x13\x18"
         result, editor = self.run_editor(path, keys)
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), " betaalpha")
@@ -336,7 +369,7 @@ class LayoutAndStateTests(unittest.TestCase):
     def test_alt_w_copies_a_region_and_ctrl_y_yanks_it(self) -> None:
         path = self.directory / "region.txt"
         path.write_text("alpha beta", encoding="utf-8")
-        keys = "\x00" + "\x06" * 5 + "\x1bw\x05\x19\x13"
+        keys = "\x00" + "\x06" * 5 + "\x1bw\x05\x19\x13\x18"
         result, _editor = self.run_editor(path, keys)
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "alpha betaalpha")
@@ -344,7 +377,7 @@ class LayoutAndStateTests(unittest.TestCase):
     def test_ctrl_k_uses_prompt_toolkit_kill_to_end_of_line(self) -> None:
         path = self.directory / "lines.txt"
         path.write_text("one\ntwo", encoding="utf-8")
-        result, editor = self.run_editor(path, "\x06\x06\x0b\x19!\x13")
+        result, editor = self.run_editor(path, "\x06\x06\x0b\x19!\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "one!\ntwo")
         self.assertEqual(editor.application.clipboard.get_data().text, "e")
@@ -352,7 +385,7 @@ class LayoutAndStateTests(unittest.TestCase):
     def test_ctrl_u_uses_prompt_toolkit_kill_to_start_of_line(self) -> None:
         path = self.directory / "lines.txt"
         path.write_text("one\ntwo", encoding="utf-8")
-        result, editor = self.run_editor(path, "\x06\x06\x15\x19!\x13")
+        result, editor = self.run_editor(path, "\x06\x06\x15\x19!\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "on!e\ntwo")
         self.assertEqual(editor.application.clipboard.get_data().text, "on")
@@ -391,6 +424,32 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIs(result.reason, inedit.ExitReason.CANCELED)
         self.assertEqual(path.read_text(encoding="utf-8"), "external")
 
+    def test_ctrl_x_saves_modified_buffer_on_yes(self) -> None:
+        path = self.directory / "new.txt"
+        result, editor = self.run_editor(path, "hello\x18y")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertFalse(editor.state.exit_prompt)
+        self.assertEqual(path.read_text(encoding="utf-8"), "hello")
+
+    def test_ctrl_x_discards_modified_buffer_on_no(self) -> None:
+        path = self.directory / "existing.txt"
+        path.write_text("original", encoding="utf-8")
+        result, _editor = self.run_editor(path, "x\x18n")
+        self.assertIs(result.reason, inedit.ExitReason.CANCELED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "original")
+
+    def test_ctrl_c_returns_from_exit_prompt_to_editing(self) -> None:
+        path = self.directory / "new.txt"
+        result, _editor = self.run_editor(path, "x\x18q\x03y\x13\x18")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "xy")
+
+    def test_repeated_ctrl_s_refreshes_the_conflict_snapshot(self) -> None:
+        path = self.directory / "new.txt"
+        result, _editor = self.run_editor(path, "one\x13two\x13\x18")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "onetwo")
+
     def test_tiny_resized_terminal_exits_with_error(self) -> None:
         class TinyOutput(DummyOutput):
             def get_size(self) -> Size:
@@ -412,7 +471,7 @@ class LayoutAndStateTests(unittest.TestCase):
     def test_global_save_binding_works_in_vi_mode(self) -> None:
         path = self.directory / "existing.txt"
         path.write_text("same", encoding="utf-8")
-        result, _editor = self.run_editor(path, "\x13", vi=True)
+        result, _editor = self.run_editor(path, "\x13\x18", vi=True)
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
 
 
@@ -489,19 +548,23 @@ class PtyIntegrationTests(unittest.TestCase):
             try:
                 read_until(b"^S Save")
                 if action == "save":
-                    os.write(master, b"alpha\nbeta\x13")
+                    os.write(master, b"alpha\nbeta\x13\x18")
                 elif action == "cancel":
                     os.write(master, b"x\x03\x03")
                 elif action == "help":
                     os.write(master, b"\x07")
                     read_until(b"inedit help")
                     read_until(b"Close this help")
-                    os.write(master, b"\x07\x13")
+                    os.write(master, b"\x07\x13\x18")
+                elif action == "exit_prompt":
+                    os.write(master, b"x\x18")
+                    read_until(b"Save modified buffer?")
+                    os.write(master, b"\x03\x13\x18")
                 elif action == "sigint":
                     os.write(master, b"x")
                     read_until(b"| modifi")
                     process.send_signal(signal.SIGINT)
-                    read_until(b"Unsaved ch")
+                    time.sleep(0.2)
                     process.send_signal(signal.SIGINT)
                 elif action == "sigterm":
                     process.send_signal(signal.SIGTERM)
@@ -569,6 +632,14 @@ class PtyIntegrationTests(unittest.TestCase):
         self.assertIn(b"inedit help", helped[1])
         self.assertIn(b"Close this help", helped[1])
         self.assert_rendering_contract(helped[1], helped[3])
+
+    def test_ctrl_x_prompt_renders_inline_and_can_be_canceled(self) -> None:
+        prompted = self.run_pty_case(b"original", "exit_prompt")
+
+        self.assertEqual(prompted[0], 0)
+        self.assertEqual(prompted[2], b"xoriginal")
+        self.assertIn(b"Save modified buffer?", prompted[1])
+        self.assert_rendering_contract(prompted[1], prompted[3])
 
 
 if __name__ == "__main__":

@@ -54,14 +54,13 @@ in both in-editor help and [README.md](README.md).
 
 Current and tentative direction:
 
-- make `Ctrl-X` initiate Nano-style exit behavior;
+- keep the implemented Nano/Pico-style `Ctrl-X` exit prompt;
 - keep the implemented `Ctrl-G` inline help view;
 - inherit `Ctrl-Space`, `Ctrl-W`, `Alt-W`, `Ctrl-K`, `Ctrl-U`, and `Ctrl-Y`
   directly from prompt-toolkit;
 - keep the internal clipboard at one entry and do not advertise yank-pop;
 - retain `Ctrl-Z` as an undo convenience and `Alt-E` as redo for now;
-- retain `Ctrl-S` as an obvious immediate save command, but settle whether it
-  saves in place or saves and exits once the `Ctrl-X` interaction exists;
+- keep `Ctrl-S` as save-without-exit;
 - reconsider the eventual role of the current `Ctrl-C` safe-cancel shortcut
   as part of the exit-state design; and
 - keep `--vi` available, with global save and exit commands documented
@@ -74,10 +73,11 @@ Decision order for an unsettled binding:
 3. Use Nano as a precedent for application-level interactions.
 4. Add a custom editing binding only for a demonstrated usability problem.
 
-Nano-style `Ctrl-X` still needs an exact state machine. For a modified buffer,
-the likely interaction is a compact `Save modified buffer?` prompt with save,
-discard, and return-to-editing choices. Exit statuses for each path must be
-defined before implementation.
+The `Ctrl-X` state machine is implemented. An unchanged buffer exits with
+status 0. A modified buffer asks `Save modified buffer?`: `Y` saves and exits
+with status 0, `N` discards and returns status 130, and `Ctrl-C` returns to
+editing. While the prompt is active, the editing buffer is read-only so an
+unrecognized answer cannot leak into the file.
 
 ### 3. Extend discoverable in-editor help
 
@@ -90,10 +90,10 @@ authoritative user key reference.
 
 ### 4. Reconcile the status line with the keymap
 
-The one-row status line now includes `^G Help`, changing to `^G Close` while
-help is visible. Revisit the remaining hints when `Ctrl-X` exit lands, without
-making the row noisy. The full key list belongs in help; the status line should
-favor help, save, exit/cancel, and the active transient prompt.
+The one-row status line includes `^G Help`, `^S Save`, `^X Exit`, and the
+current `^C Cancel`, with `^G Help` changing to `^G Close` while help is
+visible. The full key list belongs in help; the status line should favor help,
+save, exit/cancel, and the active transient prompt.
 
 ## Goals
 
@@ -137,7 +137,8 @@ height. It contains:
 
 1. A scrollable multiline editing area using all but the last row.
 2. A one-row status line containing the shortened filename, cursor position,
-   modified state, transient errors, and `^G Help | ^S Save | ^C Cancel`.
+   modified state, transient errors, and
+   `^G Help | ^S Save | ^X Exit | ^C Cancel`.
 
 Long logical lines scroll horizontally rather than soft-wrapping. The cursor's
 logical line must remain visible as it moves. The filename should be truncated
@@ -178,20 +179,25 @@ current keys include:
 | `Ctrl-K` | Kill to the end of the line (prompt-toolkit) |
 | `Ctrl-U` | Kill to the beginning of the line (prompt-toolkit) |
 | `Ctrl-Y` | Paste/yank the latest clipboard value (prompt-toolkit) |
-| `Ctrl-S` | Save and exit successfully |
+| `Ctrl-S` | Save and continue editing |
+| `Ctrl-X` | Exit, prompting to save a modified buffer |
 | `Ctrl-C` | Cancel |
 
 See [README.md](README.md) for the complete current key reference.
 
 In `--vi` mode, prompt_toolkit owns vi insert/normal navigation and `Escape`
-returns to normal mode. `Ctrl-S` and `Ctrl-C` retain their global meanings.
-Version 1 does not implement Ex commands such as `:wq`.
+returns to normal mode. `Ctrl-S`, `Ctrl-X`, and `Ctrl-C` retain their global
+meanings. Version 1 does not implement Ex commands such as `:wq`.
 
 If the buffer is unmodified, `Ctrl-C` cancels immediately. If it is modified,
 the first `Ctrl-C` changes the status line to `Unsaved changes; Ctrl-C again to
 discard`. A second `Ctrl-C` cancels. Any intervening edit disarms that
 confirmation. This avoids a modal dialog while protecting against accidental
 loss.
+
+`Ctrl-C` is reserved for possible future Nano alignment, where it would show
+the cursor position rather than cancel. Do not expand its current role; prefer
+`Ctrl-X` as the documented normal exit path.
 
 A save failure leaves the editor open and displays the error in the status
 line. The user can correct the problem, retry, or cancel.
@@ -228,10 +234,10 @@ report a conflict.
 
 | Status | Meaning |
 |---|---|
-| `0` | Saved successfully, or accepted an unchanged file with `Ctrl-S` |
+| `0` | Exited through `Ctrl-X` after saving or with an unchanged buffer |
 | `1` | Load, terminal, encoding, or unrecoverable runtime error |
 | `2` | Command-line usage error |
-| `130` | User canceled without saving |
+| `130` | User canceled or answered `N`; any earlier Ctrl-S save remains on disk |
 
 `SIGINT` should follow the same safe cancellation path when practical.
 `SIGTERM`, `SIGHUP`, and unexpected exceptions must restore the terminal and
@@ -244,7 +250,8 @@ The first implementation is one importable script with small testable units:
 - `parse_args()` validates command-line and environment settings.
 - `load_document()` returns decoded text, newline style, BOM state, permissions,
   and the file-change fingerprint.
-- `save_document()` performs conflict checking and atomic replacement.
+- `save_document()` performs conflict checking and atomic replacement, then
+  returns the refreshed document snapshot needed for another save.
 - `EditorState` tracks the path, original text, modified state, status message,
   and armed discard confirmation.
 - `build_application()` constructs the `TextArea`, status control, layout,

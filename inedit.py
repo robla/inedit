@@ -33,11 +33,13 @@ from prompt_toolkit.widgets import TextArea
 DEFAULT_HEIGHT = 20
 MINIMUM_HEIGHT = 4
 DISCARD_MESSAGE = "Unsaved changes; Ctrl-C again to discard"
+EXIT_PROMPT = "Save modified buffer? Y Yes | N No | ^C Cancel"
 HELP_TEXT = """inedit help
 
 File
-  Ctrl-S        Save and exit
-  Ctrl-C        Cancel (twice to discard changes)
+  Ctrl-X        Exit; prompt to save when modified
+  Ctrl-S        Save and continue editing
+  Ctrl-C        Cancel (current behavior; reserved for future alignment)
   Ctrl-G        Close this help
 
 Clipboard and selection
@@ -135,6 +137,7 @@ class EditorState:
     message: str | None = None
     discard_armed: bool = False
     help_visible: bool = False
+    exit_prompt: bool = False
     effective_height: int = DEFAULT_HEIGHT
 
     def is_modified(self, current_text: str) -> bool:
@@ -417,20 +420,35 @@ def _write_all(descriptor: int, data: bytes) -> None:
         remaining = remaining[written:]
 
 
-def save_document(document: Document, text: str) -> None:
-    """Atomically save text if the loaded path snapshot is still current."""
+def save_document(document: Document, text: str) -> Document:
+    """Atomically save text and return the new on-disk snapshot."""
 
     encoded = encode_document(document, text)
     _check_conflict(document)
+    try:
+        requested_entry = _lstat_optional(document.requested_path)
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise ConflictError(
+            f"could not inspect file path before saving: {detail}"
+        ) from exc
+    requested_entry_is_symlink = (
+        requested_entry is not None and stat.S_ISLNK(requested_entry.st_mode)
+    )
 
     descriptor: int | None = None
     temporary_path: Path | None = None
+    saved_fingerprint: Fingerprint | None = None
+    saved_mode: int | None = None
     try:
         descriptor, temporary_path = _create_temporary_sibling(document.target_path)
         _write_all(descriptor, encoded)
         if document.mode is not None:
             os.fchmod(descriptor, document.mode)
         os.fsync(descriptor)
+        saved_stat = os.fstat(descriptor)
+        saved_fingerprint = _fingerprint(saved_stat)
+        saved_mode = stat.S_IMODE(saved_stat.st_mode)
         os.close(descriptor)
         descriptor = None
 
@@ -457,6 +475,24 @@ def save_document(document: Document, text: str) -> None:
                 # The original save error is more useful, and the target was not
                 # replaced. Never risk deleting anything except this exact name.
                 pass
+
+    assert saved_fingerprint is not None
+    entry_fingerprint = (
+        document.entry_fingerprint
+        if requested_entry_is_symlink
+        else saved_fingerprint
+    )
+    return Document(
+        display_path=document.display_path,
+        requested_path=document.requested_path,
+        target_path=document.target_path,
+        text=text,
+        newline_style=document.newline_style,
+        has_bom=document.has_bom,
+        mode=saved_mode,
+        fingerprint=saved_fingerprint,
+        entry_fingerprint=entry_fingerprint,
+    )
 
 
 def effective_height(configured_height: int, terminal_rows: int) -> int:
@@ -524,10 +560,12 @@ def format_status(
     filename = _one_line(state.document.display_path)
     message = _one_line(state.message) if state.message else ""
     modified = "modified" if state.is_modified(current_text) else "unchanged"
+    if state.exit_prompt:
+        return _truncate_right(EXIT_PROMPT, columns)
     help_action = "^G Close" if state.help_visible else "^G Help"
     suffix = (
         f"Ln {cursor_row + 1}, Col {cursor_column + 1} | {modified} | "
-        f"{help_action} | ^S Save | ^C Cancel"
+        f"{help_action} | ^S Save | ^X Exit | ^C Cancel"
     )
     separator = " | "
 
@@ -570,11 +608,13 @@ def build_application(
     text_area = TextArea(
         text=document.text,
         multiline=True,
+        read_only=Condition(lambda: state.exit_prompt),
         wrap_lines=False,
         scrollbar=True,
         line_numbers=options.line_numbers,
         height=lambda: state.effective_height - 1,
     )
+    current_document = document
     help_area = TextArea(
         text=HELP_TEXT,
         multiline=True,
@@ -592,6 +632,7 @@ def build_application(
 
     def buffer_changed(_buffer: Any) -> None:
         state.discard_armed = False
+        state.exit_prompt = False
         state.message = None
         invalidate()
 
@@ -599,22 +640,55 @@ def build_application(
 
     bindings = KeyBindings()
 
-    @bindings.add("c-s", eager=True)
-    def save(event: Any) -> None:
+    def save_buffer(event: Any) -> bool:
+        nonlocal current_document
+
+        state.exit_prompt = False
         current_text = text_area.buffer.text
         if state.is_modified(current_text):
             try:
-                save_document(document, current_text)
+                current_document = save_document(current_document, current_text)
             except SaveError as exc:
                 state.message = _one_line(str(exc))
                 state.discard_armed = False
                 event.app.invalidate()
-                return
-        event.app.exit(result=EditorResult(ExitReason.SAVED))
+                return False
+            state.document = current_document
+            state.original_text = current_text
+            state.discard_armed = False
+            state.message = "Saved"
+        else:
+            state.message = "No changes to save"
+        event.app.invalidate()
+        return True
+
+    @bindings.add("c-s", eager=True)
+    def save(event: Any) -> None:
+        save_buffer(event)
+
+    @bindings.add("c-x", eager=True, save_before=lambda _event: False)
+    def exit_editor(event: Any) -> None:
+        if state.exit_prompt:
+            return
+        if state.help_visible:
+            state.help_visible = False
+            event.app.layout.focus(text_area)
+        if state.is_modified(text_area.buffer.text):
+            state.exit_prompt = True
+            state.discard_armed = False
+            state.message = None
+            event.app.invalidate()
+        else:
+            event.app.exit(result=EditorResult(ExitReason.SAVED))
 
     @bindings.add("c-c", eager=True)
     @bindings.add(Keys.SIGINT, eager=True)
     def cancel(event: Any) -> None:
+        if state.exit_prompt:
+            state.exit_prompt = False
+            state.message = None
+            event.app.invalidate()
+            return
         if not state.is_modified(text_area.buffer.text):
             event.app.exit(result=EditorResult(ExitReason.CANCELED))
         elif state.discard_armed:
@@ -630,6 +704,8 @@ def build_application(
         save_before=lambda _event: False,
     )
     def toggle_help(event: Any) -> None:
+        state.exit_prompt = False
+        state.message = None
         state.help_visible = not state.help_visible
         if state.help_visible:
             help_area.buffer.cursor_position = 0
@@ -638,7 +714,27 @@ def build_application(
             event.app.layout.focus(text_area)
         event.app.invalidate()
 
-    emacs_mode = Condition(lambda: not options.vi and not state.help_visible)
+    exit_prompt = Condition(lambda: state.exit_prompt)
+
+    @bindings.add(
+        Keys.Any,
+        filter=exit_prompt,
+        eager=True,
+        save_before=lambda _event: False,
+    )
+    def answer_exit_prompt(event: Any) -> None:
+        answer = event.data.casefold()
+        if answer == "y":
+            if save_buffer(event):
+                event.app.exit(result=EditorResult(ExitReason.SAVED))
+        elif answer == "n":
+            event.app.exit(result=EditorResult(ExitReason.CANCELED))
+
+    emacs_mode = Condition(
+        lambda: not options.vi
+        and not state.help_visible
+        and not state.exit_prompt
+    )
 
     @bindings.add(
         "c-z",

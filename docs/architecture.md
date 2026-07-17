@@ -61,6 +61,8 @@ class EditorState:
     original_text: str
     message: str | None = None
     discard_armed: bool = False
+    help_visible: bool = False
+    exit_prompt: bool = False
     effective_height: int = 20
 
     def is_modified(self, current_text: str) -> bool: ...
@@ -206,20 +208,30 @@ Register a buffer text-change callback. On every actual edit it must:
 
 Let prompt_toolkit provide arrows, Home, End, deletion, newline insertion, vi
 navigation, and viewport movement. Add eager global bindings for Ctrl-S,
-Ctrl-C, and Ctrl-G so save, cancel, and help do not depend on editing mode. In
-the default mode, let prompt-toolkit own selection, cutting, copying, and
-yanking. Add only `Ctrl-Z` undo and `Alt-E` redo as editing conveniences.
+Ctrl-X, Ctrl-C, and Ctrl-G so save, exit, cancel, and help do not depend on
+editing mode. In the default mode, let prompt-toolkit own selection, cutting,
+copying, and yanking. Add only `Ctrl-Z` undo and `Alt-E` redo as editing
+conveniences.
 
 Ctrl-S follows one path:
 
-1. If the buffer equals the original text, exit with `SAVED` without touching
-   the filesystem.
+1. If the buffer equals the original text, display `No changes to save` and
+   remain in the editor without touching the filesystem.
 2. Otherwise call `save_document(document, buffer.text)` synchronously. These
    files are intentionally small, so a worker thread would add state races for
    no practical benefit.
-3. On success, exit with `SAVED`.
+3. On success, replace the current document snapshot with the returned
+   snapshot, set `original_text` to the saved text, display `Saved`, and remain
+   in the editor.
 4. On `SaveError`, remain in the editor, put the concise error in the status
    state, disarm discard confirmation, and redraw.
+
+Ctrl-X exits immediately with `SAVED` when the buffer is unchanged. When it is
+modified, set `exit_prompt` and make the editing `TextArea` temporarily
+read-only. Render `Save modified buffer? Y Yes | N No | ^C Cancel` in the
+status row. `Y` uses the Ctrl-S save path and exits with `SAVED`, `N` exits with
+`CANCELED` without writing, and Ctrl-C clears the prompt and returns to the
+same editing buffer. Ignore other printable answers.
 
 Ctrl-C is a three-state transition:
 
@@ -231,18 +243,21 @@ modified, already armed -> CANCELED
 
 Any buffer edit moves the armed state back to not armed. Cursor movement does
 not, so the second Ctrl-C remains usable after inspecting nearby text.
+Ctrl-C is reserved for possible future Nano alignment; do not expand this
+main-screen behavior. Its prompt-local meaning remains “return to editing.”
 
 ### Prompt-toolkit-aligned keymap
 
 Prompt-toolkit's Emacs mode is the editing substrate and the default editing
-contract. Nano remains a precedent for application-level help and the planned
-exit interaction. Do not reimplement buffer-editing commands merely to align
+contract. Nano remains a precedent for application-level help and the
+implemented exit interaction. Do not reimplement buffer-editing commands merely to align
 with another editor's keymap; doing so creates unnecessary cursor, selection,
 newline, undo, and clipboard edge cases.
 
 `inedit` explicitly owns:
 
 - `Ctrl-G` help;
+- `Ctrl-X` prompted exit and `Ctrl-S` save-without-exit;
 - `Ctrl-Z` undo and `Alt-E` redo; and
 - the `inedit` save and safe-exit operations that protect the file lifecycle.
 
@@ -253,9 +268,8 @@ than a kill-ring history. Do not advertise `Alt-Y` yank-pop. Keep internal
 yank and external system-clipboard paste as separate operations even if a
 later integration lets a cut populate both.
 
-`Ctrl-X` exit remains planned. The current `Ctrl-S` save-and-exit and `Ctrl-C`
-safe-cancel behavior remains in force until that exit state machine is
-implemented.
+The current `Ctrl-C` safe-cancel behavior remains in force but is explicitly
+reserved for future Nano alignment.
 
 Keep the explicit binding surface small. Test the prompt-toolkit commands on
 which the public guide relies, but avoid wrapping or copying their handlers.
@@ -269,7 +283,7 @@ buffer document, modified state, message, and key reminder. Use one-based
 logical line and column numbers. The stable right side is:
 
 ```text
-Ln N, Col N | modified/unchanged | ^G Help | ^S Save | ^C Cancel
+Ln N, Col N | modified/unchanged | ^G Help | ^S Save | ^X Exit | ^C Cancel
 ```
 
 Place a save error or discard reminder before that stable suffix. Calculate
@@ -297,7 +311,8 @@ construction before it creates a temporary file:
    process umask applies normally. For an existing file, call `os.fchmod()`
    with the recorded permission bits.
 5. Write all encoded bytes, checking for short writes, flush, call
-   `os.fsync()`, and close the descriptor. No target mutation has occurred yet.
+   `os.fsync()`, and capture the descriptor's final fingerprint and mode before
+   closing it. No target mutation has occurred yet.
 6. Run the conflict check again immediately before commit to narrow the race
    window.
 7. Commit with `os.replace(temp_path, target_path)`. Because `target_path` is
@@ -306,6 +321,10 @@ construction before it creates a temporary file:
 8. Mark the transaction successful as soon as `os.replace()` succeeds. Do not
    perform a later operation whose failure would falsely report that an
    already-replaced file was unsaved.
+9. Return a new `Document` containing the saved text, captured target
+   fingerprint and mode, and the correct caller-visible entry fingerprint.
+   This snapshot allows repeated Ctrl-S saves without falsely detecting the
+   editor's own prior atomic replacement as an external conflict.
 
 Wrap steps 4 through 7 in `try/finally`. If the temporary pathname still
 exists, unlink only that exact sibling. Cleanup failure may be included in the
@@ -329,7 +348,8 @@ modes and the cursor. Restore the process's previous handlers afterward.
 Map results exactly:
 
 - `SAVED` -> 0
-- `CANCELED` or `KeyboardInterrupt` -> 130
+- `CANCELED` or `KeyboardInterrupt` -> 130; an earlier successful Ctrl-S save
+  is not rolled back
 - load, terminal, encoding, save-independent runtime, termination-signal, or
   unexpected error -> 1
 - `argparse` usage failure -> 2
@@ -347,18 +367,20 @@ Use temporary directories for every filesystem test. Unit-test:
 - UTF-8, UTF-8 BOM, decode errors, and NUL rejection;
 - LF, CRLF, mixed endings, bare CR, empty files, and final-newline retention;
 - existing files, new files, symlinks, dangling symlinks, and rejected types;
-- unchanged Ctrl-S avoiding a write;
+- unchanged Ctrl-S avoiding a write and remaining in the editor;
+- repeated saves, including through a symlink, refreshing conflict snapshots;
 - permission preservation and umask-respecting new-file creation;
 - conflict detection for content changes, replacement, deletion, creation,
   and symlink retargeting;
 - temporary-file cleanup on write, fsync, and replace failures;
-- dirty-state reversal through undo and the two-stage discard state machine;
+- dirty-state reversal through undo, the two-stage Ctrl-C discard state
+  machine, and the Ctrl-X `Y`/`N`/Ctrl-C prompt;
 - exact exit-status mapping.
 
 Use prompt_toolkit pipe input and dummy output for key-binding tests. Send text,
-Enter, selection, native cut/copy/yank, undo/redo, help, save, and cancel as
-actual input bytes and assert the application result, buffer, clipboard, and
-target bytes.
+Enter, selection, native cut/copy/yank, undo/redo, help, save, prompted exit,
+and cancel as actual input bytes and assert the application result, buffer,
+clipboard, and target bytes.
 
 Add PTY tests for behavior that dummy output cannot prove:
 
@@ -371,10 +393,12 @@ Add PTY tests for behavior that dummy output cannot prove:
    editing modes.
 5. Open help, verify it renders without an alternate screen, close it, and
    confirm the editing buffer is unchanged.
-6. Save and cancel modified buffers and compare exact bytes and statuses.
-7. Inject a conflict and a save failure while the UI is open; confirm the
+6. Open the Ctrl-X prompt, verify it renders inline, cancel it, and continue
+   editing.
+7. Save, exit, and cancel modified buffers and compare exact bytes and statuses.
+8. Inject a conflict and a save failure while the UI is open; confirm the
    editor remains usable.
-8. Resize the PTY, then send `SIGINT`, `SIGTERM`, and `SIGHUP`; verify cleanup,
+9. Resize the PTY, then send `SIGINT`, `SIGTERM`, and `SIGHUP`; verify cleanup,
    cursor restoration, and no implicit write.
 
 Finally, run a manual smoke test as the editor for `dsedit` with more lines than
