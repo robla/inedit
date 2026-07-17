@@ -28,12 +28,10 @@ key bindings, save policy, and cancellation behavior.
 
 ### 1. Add optional system-clipboard integration
 
-The internal clipboard and kill ring are now coherent. The default mode owns
-the `mg`/Emacs region family (`Ctrl-Space`, `Ctrl-W`, `Alt-W`, `Ctrl-Y`, and
-`Alt-Y`) alongside Nano's whole-line `Ctrl-K`, `Alt-6` copy, and `Ctrl-U`
-paste. Consecutive `Ctrl-K` cuts accumulate, deletion remains distinct from
-cutting, and focused tests cover region and line cut/copy, both paste keys,
-kill-ring rotation, undo, and redo.
+The internal clipboard now uses prompt-toolkit's native Emacs editing commands
+and retains only the latest cut or copy. This deliberately favors simple,
+CUA-like replacement semantics over kill-ring history. Focused tests cover
+native region cut/copy, `Ctrl-K`, `Ctrl-U`, `Ctrl-Y`, undo, and redo.
 
 System-clipboard support needs a separate design because terminal applications
 cannot portably read a desktop clipboard. Options to investigate include an
@@ -46,25 +44,22 @@ Keep terminal-native bracketed paste working. Decide explicitly whether an
 internal cut also populates the system clipboard and how clipboard lifetime
 works across editor invocations.
 
-### 2. Choose a small, intentional default keymap
+### 2. Keep a small, prompt-toolkit-aligned default keymap
 
-Use Nano as the default precedent, while keeping the selected `mg`/Emacs
-clipboard operations above. The goal is not complete Nano emulation: an
-`inedit`-specific requirement can override it, but an accidental
-prompt_toolkit default cannot. Every divergence from Nano should have a clear
-usability reason and appear in both in-editor help and [README.md](README.md).
-Nano is the broader usability model; `mg` is only a reference for the selected
-editing operations, not a second equal baseline.
+Use prompt-toolkit's Emacs bindings as the editing baseline. Nano is a useful
+precedent for application-level help and exit behavior, not a reason to
+replace working buffer operations. Every explicit override should satisfy an
+`inedit` lifecycle requirement or a concrete usability need and should appear
+in both in-editor help and [README.md](README.md).
 
 Current and tentative direction:
 
 - make `Ctrl-X` initiate Nano-style exit behavior;
 - keep the implemented `Ctrl-G` inline help view;
-- keep `Ctrl-Y` as yank and `Alt-Y` as kill-ring rotation;
-- keep Nano's `Alt-U` and `Alt-E` for undo and redo, with `Ctrl-Z` as an undo
-  compatibility alias;
-- keep Nano's `Ctrl-K`, `Alt-6`, and `Ctrl-U` line cut/copy/paste behavior;
-- retain movement shared by Nano and Emacs, including `Ctrl-A` and `Ctrl-E`;
+- inherit `Ctrl-Space`, `Ctrl-W`, `Alt-W`, `Ctrl-K`, `Ctrl-U`, and `Ctrl-Y`
+  directly from prompt-toolkit;
+- keep the internal clipboard at one entry and do not advertise yank-pop;
+- retain `Ctrl-Z` as an undo convenience and `Alt-E` as redo for now;
 - retain `Ctrl-S` as an obvious immediate save command, but settle whether it
   saves in place or saves and exits once the `Ctrl-X` interaction exists;
 - reconsider the eventual role of the current `Ctrl-C` safe-cancel shortcut
@@ -75,11 +70,9 @@ Current and tentative direction:
 Decision order for an unsettled binding:
 
 1. Satisfy `inedit`'s inline lifecycle and data-safety requirements.
-2. Follow Nano.
-3. Depart from Nano for the documented `mg`/Emacs region and kill-ring model,
-   or for a demonstrated usability problem.
-4. Never treat an inherited prompt_toolkit binding as settled merely because
-   it is already active.
+2. Preserve prompt-toolkit behavior.
+3. Use Nano as a precedent for application-level interactions.
+4. Add a custom editing binding only for a demonstrated usability problem.
 
 Nano-style `Ctrl-X` still needs an exact state machine. For a modified buffer,
 the likely interaction is a compact `Save modified buffer?` prompt with save,
@@ -168,7 +161,7 @@ invocation must remain visible and unchanged throughout the edit.
 ## Editing behavior
 
 The current default mode uses prompt_toolkit's Emacs editing bindings. Its
-explicit first-version bindings include:
+current keys include:
 
 | Key | Action |
 |---|---|
@@ -178,13 +171,13 @@ explicit first-version bindings include:
 | `Backspace`, `Delete` | Delete text |
 | `Ctrl-A`, `Ctrl-E` | Move to start/end of logical line |
 | `Ctrl-G` | Open or close inline help |
-| `Ctrl-Z`, `Alt-U` | Undo |
+| `Ctrl-Z`, `Ctrl-_` | Undo |
 | `Alt-E` | Redo |
-| `Ctrl-Space` | Start a selection |
-| `Ctrl-W`, `Alt-W` | Cut/copy a selected region |
-| `Ctrl-K`, `Alt-6` | Cut/copy a selected region or the current line |
-| `Ctrl-U`, `Ctrl-Y` | Paste/yank from the internal kill ring |
-| `Alt-Y` | Rotate the kill ring after a yank |
+| `Ctrl-Space` | Start a selection (prompt-toolkit) |
+| `Ctrl-W`, `Alt-W` | Cut/copy a selected region (prompt-toolkit) |
+| `Ctrl-K` | Kill to the end of the line (prompt-toolkit) |
+| `Ctrl-U` | Kill to the beginning of the line (prompt-toolkit) |
+| `Ctrl-Y` | Paste/yank the latest clipboard value (prompt-toolkit) |
 | `Ctrl-S` | Save and exit successfully |
 | `Ctrl-C` | Cancel |
 

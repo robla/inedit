@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from prompt_toolkit.application import Application
-from prompt_toolkit.clipboard import ClipboardData, InMemoryClipboard
+from prompt_toolkit.clipboard import InMemoryClipboard
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
@@ -26,7 +26,6 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
-from prompt_toolkit.selection import PasteMode
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import TextArea
@@ -43,17 +42,15 @@ File
 
 Clipboard and selection
   Ctrl-Space    Set the mark / start a selection
-  Ctrl-W        Cut the selected region
+  Ctrl-W        Cut the region, or kill the previous word
   Alt-W         Copy the selected region
-  Ctrl-K        Cut the selected region or current line
-  Alt-6         Copy the selected region or current line
-  Ctrl-U        Paste/yank from the internal kill ring
-  Ctrl-Y        Paste/yank from the internal kill ring
-  Alt-Y         Replace the last yank with the previous kill
+  Ctrl-K        Kill from the cursor to the end of the line
+  Ctrl-U        Kill from the cursor to the start of the line
+  Ctrl-Y        Paste/yank the latest cut or copy
 
 Undo and redo
   Ctrl-Z        Undo
-  Alt-U         Undo
+  Ctrl-_        Undo (prompt-toolkit default)
   Alt-E         Redo
 
 Movement
@@ -65,7 +62,7 @@ Movement
   Ctrl-P/N      Previous / next logical line
   Alt-B/F       Backward / forward one word
 
-The kill ring is internal to this inedit process. Terminal-native paste
+The internal clipboard retains only the latest cut or copy. Terminal paste
 (often Ctrl-Shift-V or Shift-Insert) continues to insert system clipboard
 text as terminal input.
 """
@@ -601,10 +598,6 @@ def build_application(
     text_area.buffer.on_text_changed += buffer_changed
 
     bindings = KeyBindings()
-    clipboard_command: dict[str, str | None] = {
-        "current": None,
-        "previous": None,
-    }
 
     @bindings.add("c-s", eager=True)
     def save(event: Any) -> None:
@@ -646,131 +639,9 @@ def build_application(
         event.app.invalidate()
 
     emacs_mode = Condition(lambda: not options.vi and not state.help_visible)
-    has_editor_selection = Condition(
-        lambda: not options.vi
-        and not state.help_visible
-        and text_area.buffer.selection_state is not None
-    )
-
-    @bindings.add(
-        "c-@",
-        filter=emacs_mode,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def start_selection(event: Any) -> None:
-        if text_area.buffer.text:
-            text_area.buffer.start_selection()
-        event.app.invalidate()
-
-    @bindings.add(
-        "c-w",
-        filter=has_editor_selection,
-        eager=True,
-    )
-    def cut_region(event: Any) -> None:
-        event.app.clipboard.set_data(text_area.buffer.cut_selection())
-        event.app.invalidate()
-
-    @bindings.add(
-        "escape",
-        "w",
-        filter=has_editor_selection,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def copy_region(event: Any) -> None:
-        event.app.clipboard.set_data(text_area.buffer.copy_selection())
-        event.app.invalidate()
-
-    def current_line_data() -> tuple[int, int, ClipboardData]:
-        buffer_document = text_area.buffer.document
-        cursor = buffer_document.cursor_position
-        start = cursor + buffer_document.get_start_of_line_position()
-        end = cursor + buffer_document.get_end_of_line_position()
-        if end < len(buffer_document.text) and buffer_document.text[end] == "\n":
-            end += 1
-        elif start == end and start > 0:
-            # The final empty line is represented only by the preceding newline.
-            start -= 1
-        return start, end, ClipboardData(buffer_document.text[start:end])
-
-    @bindings.add(
-        "c-k",
-        filter=emacs_mode,
-        eager=True,
-    )
-    def cut_line_or_region(event: Any) -> None:
-        buffer = text_area.buffer
-        if buffer.selection_state is not None:
-            data = buffer.cut_selection()
-        else:
-            start, end, data = current_line_data()
-            buffer.text = buffer.text[:start] + buffer.text[end:]
-            buffer.cursor_position = min(start, len(buffer.text))
-        if data.text:
-            if clipboard_command["previous"] == "cut-line":
-                previous = event.app.clipboard.get_data()
-                data = ClipboardData(previous.text + data.text)
-            event.app.clipboard.set_data(data)
-        clipboard_command["current"] = "cut-line"
-        event.app.invalidate()
-
-    @bindings.add(
-        "escape",
-        "6",
-        filter=emacs_mode,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def copy_line_or_region(event: Any) -> None:
-        buffer = text_area.buffer
-        if buffer.selection_state is not None:
-            data = buffer.copy_selection()
-        else:
-            _start, _end, data = current_line_data()
-        event.app.clipboard.set_data(data)
-        event.app.invalidate()
-
-    @bindings.add("c-u", filter=emacs_mode, eager=True)
-    @bindings.add("c-y", filter=emacs_mode, eager=True)
-    def yank(event: Any) -> None:
-        data = event.app.clipboard.get_data()
-        if data.text:
-            text_area.buffer.paste_clipboard_data(
-                data,
-                paste_mode=PasteMode.EMACS,
-            )
-        event.app.invalidate()
-
-    @bindings.add(
-        "escape",
-        "y",
-        filter=emacs_mode,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def yank_pop(event: Any) -> None:
-        buffer = text_area.buffer
-        document_before_paste = buffer.document_before_paste
-        if document_before_paste is not None:
-            buffer.document = document_before_paste
-            event.app.clipboard.rotate()
-            buffer.paste_clipboard_data(
-                event.app.clipboard.get_data(),
-                paste_mode=PasteMode.EMACS,
-            )
-        event.app.invalidate()
 
     @bindings.add(
         "c-z",
-        filter=emacs_mode,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    @bindings.add(
-        "escape",
-        "u",
         filter=emacs_mode,
         eager=True,
         save_before=lambda _event: False,
@@ -838,7 +709,7 @@ def build_application(
         layout=layout,
         style=Style.from_dict({"status": "reverse"}),
         key_bindings=bindings,
-        clipboard=InMemoryClipboard(),
+        clipboard=InMemoryClipboard(max_size=1),
         editing_mode=EditingMode.VI if options.vi else EditingMode.EMACS,
         enable_page_navigation_bindings=True,
         full_screen=False,
@@ -849,14 +720,6 @@ def build_application(
         output=output,
     )
 
-    def before_key_press(_sender: Any) -> None:
-        clipboard_command["current"] = None
-
-    def after_key_press(_sender: Any) -> None:
-        clipboard_command["previous"] = clipboard_command["current"]
-
-    application.key_processor.before_key_press += before_key_press
-    application.key_processor.after_key_press += after_key_press
     application_reference.append(application)
     return BuiltEditor(application, state, text_area, help_area)
 

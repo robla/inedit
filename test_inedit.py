@@ -308,11 +308,12 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "x")
 
-    def test_alt_u_is_a_nano_style_undo_alias(self) -> None:
-        path = self.directory / "new.txt"
-        result, _editor = self.run_editor(path, "x\x1bu\x13")
+    def test_alt_u_retains_prompt_toolkit_uppercase_word(self) -> None:
+        path = self.directory / "word.txt"
+        path.write_text("word", encoding="utf-8")
+        result, _editor = self.run_editor(path, "\x1bu\x13")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
-        self.assertFalse(path.exists())
+        self.assertEqual(path.read_text(encoding="utf-8"), "WORD")
 
     def test_ctrl_g_toggles_help_without_changing_the_buffer(self) -> None:
         path = self.directory / "new.txt"
@@ -340,31 +341,39 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "alpha betaalpha")
 
-    def test_ctrl_k_line_cuts_accumulate_and_ctrl_u_pastes(self) -> None:
-        path = self.directory / "lines.txt"
-        path.write_text("one\ntwo\nthree", encoding="utf-8")
-        result, editor = self.run_editor(path, "\x0b\x0b\x15!\x13")
-        self.assertIs(result.reason, inedit.ExitReason.SAVED)
-        self.assertEqual(path.read_text(encoding="utf-8"), "one\ntwo\n!three")
-        self.assertEqual(
-            editor.application.clipboard.get_data().text,
-            "one\ntwo\n",
-        )
-
-    def test_alt_6_copies_the_current_line_for_ctrl_u(self) -> None:
+    def test_ctrl_k_uses_prompt_toolkit_kill_to_end_of_line(self) -> None:
         path = self.directory / "lines.txt"
         path.write_text("one\ntwo", encoding="utf-8")
-        result, _editor = self.run_editor(path, "\x1b6\x15\x13")
+        result, editor = self.run_editor(path, "\x06\x06\x0b\x19!\x13")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
-        self.assertEqual(path.read_text(encoding="utf-8"), "one\none\ntwo")
+        self.assertEqual(path.read_text(encoding="utf-8"), "one!\ntwo")
+        self.assertEqual(editor.application.clipboard.get_data().text, "e")
 
-    def test_alt_y_rotates_the_internal_kill_ring(self) -> None:
+    def test_ctrl_u_uses_prompt_toolkit_kill_to_start_of_line(self) -> None:
         path = self.directory / "lines.txt"
-        path.write_text("one\ntwo\nthree", encoding="utf-8")
-        keys = "\x0b\x06\x02\x0b\x19\x1by!\x13"
-        result, _editor = self.run_editor(path, keys)
+        path.write_text("one\ntwo", encoding="utf-8")
+        result, editor = self.run_editor(path, "\x06\x06\x15\x19!\x13")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
-        self.assertEqual(path.read_text(encoding="utf-8"), "one\n!three")
+        self.assertEqual(path.read_text(encoding="utf-8"), "on!e\ntwo")
+        self.assertEqual(editor.application.clipboard.get_data().text, "on")
+
+    def test_internal_clipboard_retains_only_the_latest_entry(self) -> None:
+        path = self.directory / "new.txt"
+        document = inedit.load_document(path)
+        with create_pipe_input() as pipe:
+            editor = inedit.build_application(
+                document,
+                self.options(path),
+                input=pipe,
+                output=DummyOutput(),
+            )
+            editor.application.clipboard.set_text("first")
+            editor.application.clipboard.set_text("second")
+            editor.application.clipboard.rotate()
+            self.assertEqual(
+                editor.application.clipboard.get_data().text,
+                "second",
+            )
 
     def test_save_conflict_keeps_editor_open_for_cancel(self) -> None:
         path = self.directory / "new.txt"

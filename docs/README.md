@@ -5,9 +5,9 @@ uses a bounded region below the shell prompt, leaves earlier shell output
 visible, and returns when the file is saved or the edit is canceled.
 
 This page documents the current behavior. Proposed changes are tracked in
-[roadmap.md](roadmap.md). The default keymap is **Nano-first**, with a small
-set of deliberate `mg`/Emacs exceptions for region selection and kill-ring
-operations.
+[roadmap.md](roadmap.md). Text editing follows prompt-toolkit's default Emacs
+bindings wherever practical. Nano inspires application-level controls such as
+help and the planned exit flow, rather than replacing the editing engine.
 
 ## Starting the editor
 
@@ -38,13 +38,13 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 | `Ctrl-C` | Cancel |
 | `Ctrl-G` | Open or close the inline help view |
 | `Enter` | Insert a newline |
-| `Ctrl-Z`, `Alt-U` | Undo |
+| `Ctrl-Z`, `Ctrl-_` | Undo |
 | `Alt-E` | Redo |
-| `Ctrl-Y`, `Ctrl-U` | Paste/yank from the internal kill ring |
+| `Ctrl-Y` | Paste/yank the latest internal clipboard value |
 | Arrow keys | Move by character or logical line |
 | `Home`, `End` | Move to the start or end of the logical line |
 | `PageUp`, `PageDown` | Move by a viewport |
-| `Backspace`, `Delete` | Delete without adding text to the kill ring |
+| `Backspace`, `Delete` | Delete without changing the internal clipboard |
 
 If the buffer is unchanged, `Ctrl-C` cancels immediately. After an edit, press
 `Ctrl-C` twice to discard changes. The first press displays `Unsaved changes;
@@ -52,27 +52,27 @@ Ctrl-C again to discard`. Editing the buffer disarms that confirmation.
 
 ## Cutting, copying, and yanking
 
-The current clipboard behavior comes from prompt-toolkit's Emacs bindings. It
-uses an in-memory kill ring that exists only for this invocation of `inedit`.
-It is not the desktop or terminal system clipboard.
+Clipboard commands use prompt-toolkit's Emacs bindings with an in-memory
+clipboard that exists only for this invocation of `inedit`. Its capacity is
+one: each cut or copy replaces the previous value, closer to a CUA-style
+clipboard than an Emacs kill ring. It is not the desktop or terminal system
+clipboard.
 
 | Key | Current action |
 |---|---|
 | `Ctrl-Space` | Start a character selection |
 | `Shift` + movement | Start or extend a selection when supported by the terminal |
 | `Ctrl-G` | Open help without changing the buffer, cursor, or selection |
-| `Ctrl-W` with a selection | Cut the selected text into the internal kill ring |
+| `Ctrl-W` with a selection | Cut the selected text into the internal clipboard |
 | `Ctrl-W` without a selection | Kill the whitespace-delimited word before the cursor |
-| `Alt-W` with a selection | Copy the selection into the internal kill ring |
-| `Ctrl-K` | Cut the selection, or the entire current line when nothing is selected |
-| `Alt-6` | Copy the selection, or the entire current line when nothing is selected |
+| `Alt-W` with a selection | Copy the selection into the internal clipboard |
+| `Ctrl-K` | Kill from the cursor to the end of the line; at end of line, kill the newline |
+| `Ctrl-U` | Kill from the cursor back to the beginning of the line |
 | `Alt-D` | Kill forward through the current or next word |
-| `Ctrl-U`, `Ctrl-Y` | Yank the newest internal kill-ring entry at the cursor |
-| `Alt-Y` after a yank | Replace that yank with the next kill-ring entry |
+| `Ctrl-Y` | Yank the current internal clipboard value at the cursor |
 
-Consecutive `Ctrl-K` presses accumulate whole lines into one pasteable entry,
-as in Nano. Any intervening key starts a new entry on the next `Ctrl-K`.
-Earlier entries remain available through `Alt-Y` after a yank.
+There is no supported yank-pop or clipboard-history workflow. Prompt-toolkit's
+inherited `Alt-Y` command has no useful effect with a one-entry clipboard.
 
 Your terminal's own paste command—often `Ctrl-Shift-V`, `Shift-Insert`, or a
 middle-click—can still send system-clipboard text as terminal input. That
@@ -81,32 +81,17 @@ environment. Text killed inside `inedit` is not copied to the system clipboard.
 
 ## Keymap direction
 
-Nano is the primary user-interface precedent for the default mode. When a key
-has no `inedit`-specific requirement and Nano and `mg` disagree, prefer Nano.
-This is a usability baseline rather than a promise to emulate every Nano
-command. Nano's compact, task-focused interaction model is closer to the
-intended experience; `mg` is a reference for particular editing semantics,
-not the overall user interface.
+Prompt-toolkit is the editing baseline. `inedit` should not reimplement a
+prompt-toolkit editing command merely to resemble Nano or Emacs more closely.
+This keeps selection boundaries, final-newline handling, cursor placement,
+undo grouping, and clipboard behavior inside the library that owns the
+buffer.
 
-The intended exception is text selection and clipboard-like editing. Keep the
-useful `mg`/Emacs model of a mark, a selected region, an internal kill ring,
-yank, and yank rotation. This makes operations on arbitrary text possible
-without giving up Nano's more discoverable exit, help, and ordinary line
-editing conventions.
-
-The current allocation is:
-
-| Source | Planned behavior |
-|---|---|
-| Nano | `Ctrl-G` help, `Ctrl-K` line cut, `Alt-6` line copy, and `Ctrl-U` paste |
-| Nano | `Alt-U`/`Alt-E` for undo/redo; `Ctrl-Z` remains an undo convenience |
-| `mg`/Emacs exception | `Ctrl-Space` mark, `Ctrl-W` cut region, and `Alt-W` copy region |
-| `mg`/Emacs exception | `Ctrl-Y` yank and `Alt-Y` rotate the kill ring |
-| `inedit` convention | `Ctrl-S` saves and exits; `Ctrl-C` safely cancels |
-
-Nano-style `Ctrl-X` exit is the most important remaining keymap change. System
-clipboard support is a separate concern: it should complement the internal
-kill ring rather than silently replace it.
+`inedit` currently adds `Ctrl-G` help, `Ctrl-S` save-and-exit, `Ctrl-C` safe
+cancel, `Ctrl-Z` undo, and `Alt-E` redo. Nano-style `Ctrl-X` exit remains the
+most important planned application-level change. System-clipboard support is
+a separate concern and must not silently replace the one-entry internal
+clipboard.
 
 ## Inline help
 

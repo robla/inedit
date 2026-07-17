@@ -207,8 +207,8 @@ Register a buffer text-change callback. On every actual edit it must:
 Let prompt_toolkit provide arrows, Home, End, deletion, newline insertion, vi
 navigation, and viewport movement. Add eager global bindings for Ctrl-S,
 Ctrl-C, and Ctrl-G so save, cancel, and help do not depend on editing mode. In
-the default mode, explicitly own clipboard, undo, and redo bindings so changes
-in prompt_toolkit defaults cannot change the public keymap.
+the default mode, let prompt-toolkit own selection, cutting, copying, and
+yanking. Add only `Ctrl-Z` undo and `Alt-E` redo as editing conveniences.
 
 Ctrl-S follows one path:
 
@@ -232,40 +232,35 @@ modified, already armed -> CANCELED
 Any buffer edit moves the armed state back to not armed. Cursor movement does
 not, so the second Ctrl-C remains usable after inspecting nearby text.
 
-### Implemented hybrid keymap
+### Prompt-toolkit-aligned keymap
 
-The default map is a Nano-first hybrid: use Nano as the default user-interface
-precedent and make a narrow, documented `mg`/Emacs exception for region
-selection and kill-ring operations. Prompt_toolkit's Emacs mode remains a
-useful implementation substrate, but inherited bindings are not part of the
-public contract until `inedit` adopts and documents them.
+Prompt-toolkit's Emacs mode is the editing substrate and the default editing
+contract. Nano remains a precedent for application-level help and the planned
+exit interaction. Do not reimplement buffer-editing commands merely to align
+with another editor's keymap; doing so creates unnecessary cursor, selection,
+newline, undo, and clipboard edge cases.
 
-The binding layer explicitly owns:
+`inedit` explicitly owns:
 
-- Nano-style `Ctrl-G` help, `Ctrl-K` line cut, `Alt-6` line copy, and `Ctrl-U`
-  paste;
-- Nano-style `Alt-U` undo and `Alt-E` redo, plus `Ctrl-Z` as an undo alias;
-- `mg`/Emacs-style `Ctrl-Space` mark, `Ctrl-W` kill-region, `Alt-W`
-  copy-region, `Ctrl-Y` yank, and `Alt-Y` yank-pop; and
+- `Ctrl-G` help;
+- `Ctrl-Z` undo and `Alt-E` redo; and
 - the `inedit` save and safe-exit operations that protect the file lifecycle.
 
-Consecutive `Ctrl-K` operations concatenate their exact removed text into the
-newest clipboard entry. The key processor clears that accumulation state after
-any intervening key. The in-memory clipboard retains earlier entries, and
-`Alt-Y` rotates them only after a yank. Keep internal yank and external
-system-clipboard paste as separate operations even if a later integration lets
-a cut populate both.
+Configure prompt-toolkit's `InMemoryClipboard` with `max_size=1`. Its native
+`Ctrl-Space`, `Ctrl-W`, `Alt-W`, `Ctrl-K`, `Ctrl-U`, and `Ctrl-Y` handlers then
+provide selection and clipboard operations with a single latest value rather
+than a kill-ring history. Do not advertise `Alt-Y` yank-pop. Keep internal
+yank and external system-clipboard paste as separate operations even if a
+later integration lets a cut populate both.
 
 `Ctrl-X` exit remains planned. The current `Ctrl-S` save-and-exit and `Ctrl-C`
 safe-cancel behavior remains in force until that exit state machine is
 implemented.
 
-Represent intentional bindings in one data-driven registry where practical,
-including their key sequence, short help label, editing-mode scope, and
-handler. Use that registry to test conflicts and to generate or validate the
-status-line and `Ctrl-G` help entries. This avoids documentation drift and
-prevents changes in prompt_toolkit defaults from silently changing the public
-keymap.
+Keep the explicit binding surface small. Test the prompt-toolkit commands on
+which the public guide relies, but avoid wrapping or copying their handlers.
+Generate or validate status-line and `Ctrl-G` help entries from a small
+intentional-binding registry if documentation drift becomes a problem.
 
 ## Status line
 
@@ -361,9 +356,9 @@ Use temporary directories for every filesystem test. Unit-test:
 - exact exit-status mapping.
 
 Use prompt_toolkit pipe input and dummy output for key-binding tests. Send text,
-Enter, selection, cut/copy, yank, yank-pop, undo/redo, help, save, and cancel
-as actual input bytes and assert the application result, buffer, clipboard,
-and target bytes.
+Enter, selection, native cut/copy/yank, undo/redo, help, save, and cancel as
+actual input bytes and assert the application result, buffer, clipboard, and
+target bytes.
 
 Add PTY tests for behavior that dummy output cannot prove:
 
