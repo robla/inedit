@@ -1,14 +1,14 @@
-# `inedit.py` Specification
+# `inedit.py` roadmap
 
-## Status and implementation choice
+## Status
 
-`inedit.py` is a proposed minimal text editor for short-lived files such as the
-temporary directory-stack file created by `dsedit`. Its defining behavior is a
-fixed-height editor rendered below the shell prompt without switching to the
-terminal's alternate screen.
+The first version of `inedit.py` is implemented as a minimal text editor for
+short-lived files such as the temporary directory-stack file created by
+`dsedit`. Its defining behavior is a fixed-height editor rendered below the
+shell prompt without switching to the terminal's alternate screen.
 
-The first implementation should use **prompt_toolkit**, not raw terminal escape
-sequences. On the environment inspected on July 16, 2026, Python 3.11.2 and
+The implementation uses **prompt_toolkit**, not raw terminal escape sequences.
+On the environment inspected on July 16, 2026, Python 3.11.2 and
 prompt_toolkit 3.0.36 are already installed from Debian packages. That version
 provides a multiline `TextArea`, fixed dimensions, Emacs and vi editing modes,
 custom key bindings, Unicode width handling, scrolling, and an explicitly
@@ -16,12 +16,106 @@ non-full-screen `Application`.
 
 A pipe-input/Vt100-output probe against the installed version rendered and
 closed a fixed-height `TextArea` without emitting `CSI ? 1049 h`, `CSI ? 1047
-h`, or `CSI ? 47 h`, the common alternate-screen entry sequences. This verifies
-the central rendering assumption before implementation.
+h`, or `CSI ? 47 h`, the common alternate-screen entry sequences. This
+verified the central rendering assumption before implementation, and PTY tests
+continue to enforce it.
 
 `inedit.py` remains its own editor: prompt_toolkit supplies terminal mechanics
 and buffer primitives, while this program defines the file lifecycle, layout,
 key bindings, save policy, and cancellation behavior.
+
+## Near-term priorities
+
+### 1. Make clipboard behavior coherent
+
+This is the highest priority. The current Emacs-mode behavior is internally
+inconsistent: `Ctrl-W`, `Ctrl-K`, `Ctrl-U`, and selection cuts populate
+prompt-toolkit's in-memory kill ring, but `inedit` overrides the normal
+`Ctrl-Y` yank binding with redo. Yanking is possible only through the obscure
+prompt-toolkit sequence `Ctrl-X`, `R`, `Y`.
+
+The target is a Nano-first keymap with an explicit `mg`/Emacs exception for
+region and kill-ring operations. In particular, `Ctrl-Y` should return to its
+Emacs meaning of yank rather than remain bound to redo. The next clipboard
+design should:
+
+- provide obvious cut, copy, and paste/yank commands shown in the status or
+  help screen;
+- keep an internal kill ring so repeated kills and yank rotation remain useful;
+- distinguish deleting text from cutting it;
+- decide whether cuts also populate the system clipboard;
+- provide a practical way to paste from the system clipboard where the
+  terminal and platform permit it;
+- keep terminal-native bracketed paste working; and
+- add focused tests for selections, whole lines, repeated kills, yank, yank
+  rotation, undo, redo, and clipboard lifetime.
+
+The preferred region family is `Ctrl-Space` to set the mark, `Ctrl-W` to cut a
+region, `Alt-W` to copy it, `Ctrl-Y` to yank, and `Alt-Y` to rotate through the
+kill ring. These are intentional `mg`/Emacs departures from Nano. Nano remains
+the precedent for ordinary line cutting and pasting, but the exact interaction
+of its `Ctrl-K`/`Ctrl-U` pair with the kill ring needs a small prototype before
+those bindings are declared settled.
+
+System-clipboard support needs a separate design because terminal applications
+cannot portably read a desktop clipboard. Options to investigate include an
+optional platform command (`wl-copy`/`wl-paste`, `xclip`, or equivalents),
+terminal protocols such as OSC 52 where appropriate, and an internal-only
+fallback that always works. Clipboard integration must not introduce a hard
+desktop dependency or silently expose copied text.
+
+### 2. Choose a small, intentional default keymap
+
+Use Nano as the default precedent, while keeping the selected `mg`/Emacs
+clipboard operations above. The goal is not complete Nano emulation: an
+`inedit`-specific requirement can override it, but an accidental
+prompt_toolkit default cannot. Every divergence from Nano should have a clear
+usability reason and appear in both in-editor help and [README.md](README.md).
+Nano is the broader usability model; `mg` is only a reference for the selected
+editing operations, not a second equal baseline.
+
+Tentative direction:
+
+- make `Ctrl-X` initiate Nano-style exit behavior;
+- make `Ctrl-G` open Nano-style help;
+- restore `Ctrl-Y` as yank and reserve `Alt-Y` for kill-ring rotation;
+- prefer Nano's `Alt-U` and `Alt-E` for undo and redo; decide separately
+  whether `Ctrl-Z` remains as a compatibility alias;
+- retain movement shared by Nano and Emacs, including `Ctrl-A` and `Ctrl-E`;
+- retain `Ctrl-S` as an obvious immediate save command, but settle whether it
+  saves in place or saves and exits once the `Ctrl-X` interaction exists;
+- reconsider the eventual role of the current `Ctrl-C` safe-cancel shortcut
+  as part of the exit-state design; and
+- keep `--vi` available, with global save and exit commands documented
+  separately from vi navigation.
+
+Decision order for an unsettled binding:
+
+1. Satisfy `inedit`'s inline lifecycle and data-safety requirements.
+2. Follow Nano.
+3. Depart from Nano for the documented `mg`/Emacs region and kill-ring model,
+   or for a demonstrated usability problem.
+4. Never treat an inherited prompt_toolkit binding as settled merely because
+   it is already active.
+
+Nano-style `Ctrl-X` still needs an exact state machine. For a modified buffer,
+the likely interaction is a compact `Save modified buffer?` prompt with save,
+discard, and return-to-editing choices. Exit statuses for each path must be
+defined before implementation.
+
+### 3. Add discoverable in-editor help
+
+Add a `Ctrl-G` help view based on [README.md](README.md). It should fit the
+inline rendering model, show the active mode and current keys, and return to
+the same buffer and cursor position without modifying the file. Until then,
+`docs/README.md` is the authoritative user key reference.
+
+### 4. Reconcile the status line with the keymap
+
+Once clipboard and exit keys settle, show the most important current actions
+without making the one-row status line noisy. The full key list belongs in
+help; the status line should favor save, exit/cancel, and the active transient
+prompt.
 
 ## Goals
 
@@ -88,7 +182,8 @@ invocation must remain visible and unchanged throughout the edit.
 
 ## Editing behavior
 
-The default mode uses prompt_toolkit's Emacs editing bindings. At minimum:
+The current default mode uses prompt_toolkit's Emacs editing bindings. Its
+explicit first-version bindings include:
 
 | Key | Action |
 |---|---|
@@ -100,6 +195,10 @@ The default mode uses prompt_toolkit's Emacs editing bindings. At minimum:
 | `Ctrl-Z`, `Ctrl-Y` | Undo/redo |
 | `Ctrl-S` | Save and exit successfully |
 | `Ctrl-C` | Cancel |
+
+`Ctrl-Y` as redo is current behavior, not a settled long-term choice. See the
+clipboard priority above and [README.md](README.md) for the complete current
+key reference.
 
 In `--vi` mode, prompt_toolkit owns vi insert/normal navigation and `Escape`
 returns to normal mode. `Ctrl-S` and `Ctrl-C` retain their global meanings.
@@ -155,10 +254,9 @@ report a conflict.
 `SIGTERM`, `SIGHUP`, and unexpected exceptions must restore the terminal and
 must not save implicitly.
 
-## Proposed structure
+## Implementation structure
 
-Keep the first implementation in one importable script with small testable
-units:
+The first implementation is one importable script with small testable units:
 
 - `parse_args()` validates command-line and environment settings.
 - `load_document()` returns decoded text, newline style, BOM state, permissions,
@@ -213,14 +311,15 @@ It is worth revisiting if a current Textual package becomes easy to install.
 For the present environment, prompt_toolkit reaches the same essential result
 without changing Python package sources.
 
-## Verification plan
+## Ongoing verification
 
-Unit tests should cover argument parsing, height capping, UTF-8/BOM handling,
-LF and CRLF preservation, final-newline preservation, new-file creation,
-permission preservation, conflict detection, and cleanup after failed saves.
+Unit tests cover and should continue to cover argument parsing, height capping,
+UTF-8/BOM handling, LF and CRLF preservation, final-newline preservation,
+new-file creation, permission preservation, conflict detection, and cleanup
+after failed saves.
 
-Prompt behavior can be tested with prompt_toolkit's pipe-input and dummy-output
-helpers. Separate PTY integration tests should:
+Prompt behavior is tested with prompt_toolkit's pipe-input and dummy-output
+helpers. PTY integration tests:
 
 - Start the editor in an 80x24 pseudo-terminal with recognizable output above
   it and verify that output remains present.
@@ -243,11 +342,12 @@ EDITOR='python3 /path/to/inedit.py' dsedit
 Use a directory stack longer than the viewport and include paths containing
 spaces and long paths requiring horizontal scrolling.
 
-## Non-goals for version 1
+## Continuing non-goals
 
 - Multiple files, tabs, split views, syntax highlighting, or plugins.
 - Search and replace, macros, or an Ex command line.
-- Mouse selection or system-clipboard integration.
+- Mouse selection. System-clipboard integration is now a near-term roadmap
+  item, but must remain optional and terminal-safe.
 - Arbitrary encodings or binary-file editing.
 - Remote files, file locking protocols, swap files, or crash recovery.
 - A full-screen fallback. If inline rendering cannot be established safely,
@@ -255,6 +355,8 @@ spaces and long paths requiring horizontal scrolling.
 
 ## References
 
+- [GNU Nano command cheat sheet](https://www.nano-editor.org/dist/latest/cheatsheet.html)
+- [OpenBSD `mg` manual](https://man.openbsd.org/mg)
 - [prompt_toolkit API reference](https://python-prompt-toolkit.readthedocs.io/en/stable/pages/reference.html)
 - [Textual inline application explanation and editor example](https://textual.textualize.io/blog/2024/04/20/behind-the-curtain-of-inline-terminal-applications/)
 - [Textual `TextArea` documentation](https://textual.textualize.io/widgets/text_area/)

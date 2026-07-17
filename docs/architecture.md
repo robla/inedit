@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Build `inedit.py` as a small, importable Python program whose behavior is
-defined by [README.md](README.md). `prompt_toolkit` owns terminal input,
+Build `inedit.py` as a small, importable Python program whose version-1
+contract is recorded in [roadmap.md](roadmap.md). `prompt_toolkit` owns terminal input,
 Unicode-aware rendering, scrolling, and basic editing. `inedit.py` owns the
 command line, document format, file-conflict policy, atomic save transaction,
 editor state, status line, and process exit status.
@@ -229,6 +229,36 @@ modified, already armed -> CANCELED
 
 Any buffer edit moves the armed state back to not armed. Cursor movement does
 not, so the second Ctrl-C remains usable after inspecting nearby text.
+
+### Planned keymap policy
+
+The bindings above describe version 1, not the intended final default map.
+Future keymap work should implement a Nano-first hybrid: use Nano as the
+default user-interface precedent and make a narrow, documented `mg`/Emacs
+exception for region selection and kill-ring operations. Prompt_toolkit's
+Emacs mode remains a useful implementation substrate, but inherited bindings
+are not part of the public contract until `inedit` adopts and documents them.
+
+The next binding layer should explicitly own at least:
+
+- Nano-style `Ctrl-X` exit and `Ctrl-G` help;
+- Nano-style `Alt-U` undo and `Alt-E` redo;
+- `mg`/Emacs-style `Ctrl-Space` mark, `Ctrl-W` kill-region, `Alt-W`
+  copy-region, `Ctrl-Y` yank, and `Alt-Y` yank-pop; and
+- the `inedit` save and safe-exit operations that protect the file lifecycle.
+
+`Ctrl-K`, `Ctrl-U`, `Ctrl-C`, the precise `Ctrl-S` behavior, and compatibility
+aliases remain design decisions. Prototype the Nano line cut/paste behavior
+against prompt_toolkit's kill ring before fixing those bindings. Keep internal
+yank and external system-clipboard paste as separate operations even if a
+later integration lets a cut populate both.
+
+Represent intentional bindings in one data-driven registry where practical,
+including their key sequence, short help label, editing-mode scope, and
+handler. Use that registry to test conflicts and to generate or validate the
+status-line and `Ctrl-G` help entries. This avoids documentation drift and
+prevents changes in prompt_toolkit defaults from silently changing the public
+keymap.
 
 ## Status line
 

@@ -19,3 +19,5 @@ Conventions:
 * LLM log
 ** Codex [2026-07-16 Thu 23:12 PDT]: Initialized the editor specification, implementation architecture, and project LLM log.
 ** Codex [2026-07-16 Thu 23:39 PDT]: Implemented the inline editor with atomic conflict-safe saves, signal-safe cleanup, and unit and PTY coverage.
+** Codex [2026-07-17 Fri 00:45 PDT]: Documented current keys and prioritized clipboard, Nano-style exit, and in-editor help work.
+** Codex [2026-07-17 Fri 01:17 PDT]: Established a Nano-first keymap direction with explicit =mg=/Emacs exceptions for region and kill-ring operations.
