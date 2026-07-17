@@ -18,3 +18,4 @@ Conventions:
 
 * LLM log
 ** Codex [2026-07-16 Thu 23:12 PDT]: Initialized the editor specification, implementation architecture, and project LLM log.
+** Codex [2026-07-16 Thu 23:39 PDT]: Implemented the inline editor with atomic conflict-safe saves, signal-safe cleanup, and unit and PTY coverage.
