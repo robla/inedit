@@ -4,14 +4,10 @@
 uses a bounded region below the shell prompt, leaves earlier shell output
 visible, and returns when the file is saved or the edit is canceled.
 
-This page documents the current behavior. Proposed key changes are tracked in
-[roadmap.md](roadmap.md).
-
-The planned default keymap is **Nano-first**, with a small set of deliberate
-`mg`/Emacs exceptions for region selection and kill-ring operations. See
-[Planned keymap direction](#planned-keymap-direction) below. Nothing in that
-section describes a shipped binding unless it also appears in the current-key
-tables.
+This page documents the current behavior. Proposed changes are tracked in
+[roadmap.md](roadmap.md). The default keymap is **Nano-first**, with a small
+set of deliberate `mg`/Emacs exceptions for region selection and kill-ring
+operations.
 
 ## Starting the editor
 
@@ -40,9 +36,11 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 |---|---|
 | `Ctrl-S` | Save and exit |
 | `Ctrl-C` | Cancel |
+| `Ctrl-G` | Open or close the inline help view |
 | `Enter` | Insert a newline |
-| `Ctrl-Z` | Undo |
-| `Ctrl-Y` | Redo; it does **not** paste in the current version |
+| `Ctrl-Z`, `Alt-U` | Undo |
+| `Alt-E` | Redo |
+| `Ctrl-Y`, `Ctrl-U` | Paste/yank from the internal kill ring |
 | Arrow keys | Move by character or logical line |
 | `Home`, `End` | Move to the start or end of the logical line |
 | `PageUp`, `PageDown` | Move by a viewport |
@@ -62,28 +60,26 @@ It is not the desktop or terminal system clipboard.
 |---|---|
 | `Ctrl-Space` | Start a character selection |
 | `Shift` + movement | Start or extend a selection when supported by the terminal |
-| `Ctrl-G` | Cancel the current selection; there is no help screen yet |
+| `Ctrl-G` | Open help without changing the buffer, cursor, or selection |
 | `Ctrl-W` with a selection | Cut the selected text into the internal kill ring |
 | `Ctrl-W` without a selection | Kill the whitespace-delimited word before the cursor |
 | `Alt-W` with a selection | Copy the selection into the internal kill ring |
-| `Ctrl-K` | Kill from the cursor to the end of the line; at end of line, kill the newline |
-| `Ctrl-U` | Kill from the cursor back to the beginning of the line |
+| `Ctrl-K` | Cut the selection, or the entire current line when nothing is selected |
+| `Alt-6` | Copy the selection, or the entire current line when nothing is selected |
 | `Alt-D` | Kill forward through the current or next word |
-| `Ctrl-X`, `R`, `Y` | Yank the newest internal kill-ring entry before the cursor |
+| `Ctrl-U`, `Ctrl-Y` | Yank the newest internal kill-ring entry at the cursor |
 | `Alt-Y` after a yank | Replace that yank with the next kill-ring entry |
 
-The surprising part is `Ctrl-Y`: prompt-toolkit normally assigns it to yank,
-but `inedit` currently overrides it with redo. Consequently, `Ctrl-X`, `R`,
-`Y` is the only currently documented command for yanking text cut with
-`Ctrl-W`, `Ctrl-K`, or `Ctrl-U`. This is functional but obscure and is the
-highest-priority usability problem in the roadmap.
+Consecutive `Ctrl-K` presses accumulate whole lines into one pasteable entry,
+as in Nano. Any intervening key starts a new entry on the next `Ctrl-K`.
+Earlier entries remain available through `Alt-Y` after a yank.
 
 Your terminal's own paste command—often `Ctrl-Shift-V`, `Shift-Insert`, or a
 middle-click—can still send system-clipboard text as terminal input. That
 shortcut belongs to the terminal emulator, not to `inedit`, and varies by
 environment. Text killed inside `inedit` is not copied to the system clipboard.
 
-## Planned keymap direction
+## Keymap direction
 
 Nano is the primary user-interface precedent for the default mode. When a key
 has no `inedit`-specific requirement and Nano and `mg` disagree, prefer Nano.
@@ -98,21 +94,26 @@ yank, and yank rotation. This makes operations on arbitrary text possible
 without giving up Nano's more discoverable exit, help, and ordinary line
 editing conventions.
 
-The working allocation is:
+The current allocation is:
 
 | Source | Planned behavior |
 |---|---|
-| Nano | `Ctrl-X` exit flow and `Ctrl-G` help |
-| Nano | Prefer `Alt-U`/`Alt-E` for undo/redo and Nano's ordinary line-editing commands |
+| Nano | `Ctrl-G` help, `Ctrl-K` line cut, `Alt-6` line copy, and `Ctrl-U` paste |
+| Nano | `Alt-U`/`Alt-E` for undo/redo; `Ctrl-Z` remains an undo convenience |
 | `mg`/Emacs exception | `Ctrl-Space` mark, `Ctrl-W` cut region, and `Alt-W` copy region |
 | `mg`/Emacs exception | `Ctrl-Y` yank and `Alt-Y` rotate the kill ring |
-| `inedit` convention | Retain an obvious immediate save command; settle whether it saves or saves-and-exits alongside the `Ctrl-X` flow |
+| `inedit` convention | `Ctrl-S` saves and exits; `Ctrl-C` safely cancels |
 
-The exact behavior of `Ctrl-K`, `Ctrl-U`, `Ctrl-C`, and compatibility aliases
-is not settled. Nano is the default answer for those conflicts unless testing
-shows that it breaks the region/kill-ring workflow. System-clipboard support
-is a separate concern: it should complement the internal kill ring rather than
-silently replace it.
+Nano-style `Ctrl-X` exit is the most important remaining keymap change. System
+clipboard support is a separate concern: it should complement the internal
+kill ring rather than silently replace it.
+
+## Inline help
+
+Press `Ctrl-G` to replace the editing area with a scrollable key reference.
+Press `Ctrl-G` again to return to the same buffer, cursor, and selection. The
+status bar shows `^G Help` while editing and `^G Close` in the help view. Arrow
+keys and `PageUp`/`PageDown` navigate the help text.
 
 ## Movement in default Emacs mode
 
@@ -158,8 +159,6 @@ available.
 ## Current limitations
 
 - No direct system-clipboard integration.
-- No in-editor `Ctrl-G` help screen yet.
 - `Ctrl-X` is currently an Emacs prefix rather than Nano-style exit.
-- The current bindings do not yet implement the documented Nano-first hybrid.
 - No search and replace, syntax highlighting, mouse selection, multiple files,
   or crash-recovery file.

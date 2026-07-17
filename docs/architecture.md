@@ -164,7 +164,9 @@ TextArea(
 )
 ```
 
-Do not install an accept handler: Enter must insert a newline. Put the text area
+Do not install an accept handler: Enter must insert a newline. Construct a
+second read-only, scrollable `TextArea` for help. A `DynamicContainer` selects
+the editor or help body without replacing the editing buffer. Put that body
 and a `Window(FormattedTextControl(...), height=1)` in an `HSplit` whose height
 is `lambda: state.effective_height`. Focus the text area in the `Layout`.
 Configure the application explicitly:
@@ -203,10 +205,10 @@ Register a buffer text-change callback. On every actual edit it must:
 - invalidate the application so the status row redraws.
 
 Let prompt_toolkit provide arrows, Home, End, deletion, newline insertion, vi
-navigation, and viewport movement. Add eager global bindings for Ctrl-S and
-Ctrl-C so their meanings do not depend on editing mode. In Emacs mode, bind
-Ctrl-Z to `buffer.undo()` and Ctrl-Y to `buffer.redo()` explicitly; this also
-prevents platform defaults from changing the required behavior.
+navigation, and viewport movement. Add eager global bindings for Ctrl-S,
+Ctrl-C, and Ctrl-G so save, cancel, and help do not depend on editing mode. In
+the default mode, explicitly own clipboard, undo, and redo bindings so changes
+in prompt_toolkit defaults cannot change the public keymap.
 
 Ctrl-S follows one path:
 
@@ -230,28 +232,33 @@ modified, already armed -> CANCELED
 Any buffer edit moves the armed state back to not armed. Cursor movement does
 not, so the second Ctrl-C remains usable after inspecting nearby text.
 
-### Planned keymap policy
+### Implemented hybrid keymap
 
-The bindings above describe version 1, not the intended final default map.
-Future keymap work should implement a Nano-first hybrid: use Nano as the
-default user-interface precedent and make a narrow, documented `mg`/Emacs
-exception for region selection and kill-ring operations. Prompt_toolkit's
-Emacs mode remains a useful implementation substrate, but inherited bindings
-are not part of the public contract until `inedit` adopts and documents them.
+The default map is a Nano-first hybrid: use Nano as the default user-interface
+precedent and make a narrow, documented `mg`/Emacs exception for region
+selection and kill-ring operations. Prompt_toolkit's Emacs mode remains a
+useful implementation substrate, but inherited bindings are not part of the
+public contract until `inedit` adopts and documents them.
 
-The next binding layer should explicitly own at least:
+The binding layer explicitly owns:
 
-- Nano-style `Ctrl-X` exit and `Ctrl-G` help;
-- Nano-style `Alt-U` undo and `Alt-E` redo;
+- Nano-style `Ctrl-G` help, `Ctrl-K` line cut, `Alt-6` line copy, and `Ctrl-U`
+  paste;
+- Nano-style `Alt-U` undo and `Alt-E` redo, plus `Ctrl-Z` as an undo alias;
 - `mg`/Emacs-style `Ctrl-Space` mark, `Ctrl-W` kill-region, `Alt-W`
   copy-region, `Ctrl-Y` yank, and `Alt-Y` yank-pop; and
 - the `inedit` save and safe-exit operations that protect the file lifecycle.
 
-`Ctrl-K`, `Ctrl-U`, `Ctrl-C`, the precise `Ctrl-S` behavior, and compatibility
-aliases remain design decisions. Prototype the Nano line cut/paste behavior
-against prompt_toolkit's kill ring before fixing those bindings. Keep internal
-yank and external system-clipboard paste as separate operations even if a
-later integration lets a cut populate both.
+Consecutive `Ctrl-K` operations concatenate their exact removed text into the
+newest clipboard entry. The key processor clears that accumulation state after
+any intervening key. The in-memory clipboard retains earlier entries, and
+`Alt-Y` rotates them only after a yank. Keep internal yank and external
+system-clipboard paste as separate operations even if a later integration lets
+a cut populate both.
+
+`Ctrl-X` exit remains planned. The current `Ctrl-S` save-and-exit and `Ctrl-C`
+safe-cancel behavior remains in force until that exit state machine is
+implemented.
 
 Represent intentional bindings in one data-driven registry where practical,
 including their key sequence, short help label, editing-mode scope, and
@@ -267,7 +274,7 @@ buffer document, modified state, message, and key reminder. Use one-based
 logical line and column numbers. The stable right side is:
 
 ```text
-Ln N, Col N | modified/unchanged | Ctrl-S save | Ctrl-C cancel
+Ln N, Col N | modified/unchanged | ^G Help | ^S Save | ^C Cancel
 ```
 
 Place a save error or discard reminder before that stable suffix. Calculate
@@ -354,8 +361,9 @@ Use temporary directories for every filesystem test. Unit-test:
 - exact exit-status mapping.
 
 Use prompt_toolkit pipe input and dummy output for key-binding tests. Send text,
-Enter, Ctrl-Z, Ctrl-Y, Ctrl-S, and Ctrl-C as actual input bytes and assert the
-application result and target bytes.
+Enter, selection, cut/copy, yank, yank-pop, undo/redo, help, save, and cancel
+as actual input bytes and assert the application result, buffer, clipboard,
+and target bytes.
 
 Add PTY tests for behavior that dummy output cannot prove:
 
@@ -366,10 +374,12 @@ Add PTY tests for behavior that dummy output cannot prove:
    sentinel remains visible.
 4. Exercise horizontal scrolling, vertical scrolling, line numbers, and both
    editing modes.
-5. Save and cancel modified buffers and compare exact bytes and statuses.
-6. Inject a conflict and a save failure while the UI is open; confirm the
+5. Open help, verify it renders without an alternate screen, close it, and
+   confirm the editing buffer is unchanged.
+6. Save and cancel modified buffers and compare exact bytes and statuses.
+7. Inject a conflict and a save failure while the UI is open; confirm the
    editor remains usable.
-7. Resize the PTY, then send `SIGINT`, `SIGTERM`, and `SIGHUP`; verify cleanup,
+8. Resize the PTY, then send `SIGINT`, `SIGTERM`, and `SIGHUP`; verify cleanup,
    cursor restoration, and no implicit write.
 
 Finally, run a manual smoke test as the editor for `dsedit` with more lines than

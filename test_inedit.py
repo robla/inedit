@@ -257,7 +257,12 @@ class LayoutAndStateTests(unittest.TestCase):
         status_line = inedit.format_status(state, "", 0, 0, 80)
         self.assertTrue(status_line.startswith("…"))
         self.assertIn("Ln 1, Col 1", status_line)
-        self.assertTrue(status_line.endswith("Ctrl-S save | Ctrl-C cancel"))
+        self.assertIn("^G Help", status_line)
+        self.assertTrue(status_line.endswith("^S Save | ^C Cancel"))
+
+        state.help_visible = True
+        help_status = inedit.format_status(state, "", 0, 0, 80)
+        self.assertIn("^G Close", help_status)
 
     def test_multiline_edit_saves(self) -> None:
         path = self.directory / "new.txt"
@@ -297,11 +302,69 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "xy")
 
-    def test_ctrl_z_and_ctrl_y_undo_and_redo(self) -> None:
+    def test_ctrl_z_and_alt_e_undo_and_redo(self) -> None:
         path = self.directory / "new.txt"
-        result, _editor = self.run_editor(path, "x\x1a\x19\x13")
+        result, _editor = self.run_editor(path, "x\x1a\x1be\x13")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "x")
+
+    def test_alt_u_is_a_nano_style_undo_alias(self) -> None:
+        path = self.directory / "new.txt"
+        result, _editor = self.run_editor(path, "x\x1bu\x13")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertFalse(path.exists())
+
+    def test_ctrl_g_toggles_help_without_changing_the_buffer(self) -> None:
+        path = self.directory / "new.txt"
+        result, editor = self.run_editor(path, "x\x07\x07y\x13")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "xy")
+        self.assertFalse(editor.state.help_visible)
+        self.assertIn("Ctrl-Y", editor.help_area.buffer.text)
+        self.assertTrue(editor.help_area.buffer.read_only())
+
+    def test_ctrl_w_cuts_a_region_and_ctrl_y_yanks_it(self) -> None:
+        path = self.directory / "region.txt"
+        path.write_text("alpha beta", encoding="utf-8")
+        keys = "\x00" + "\x06" * 5 + "\x17\x05\x19\x13"
+        result, editor = self.run_editor(path, keys)
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), " betaalpha")
+        self.assertEqual(editor.application.clipboard.get_data().text, "alpha")
+
+    def test_alt_w_copies_a_region_and_ctrl_y_yanks_it(self) -> None:
+        path = self.directory / "region.txt"
+        path.write_text("alpha beta", encoding="utf-8")
+        keys = "\x00" + "\x06" * 5 + "\x1bw\x05\x19\x13"
+        result, _editor = self.run_editor(path, keys)
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "alpha betaalpha")
+
+    def test_ctrl_k_line_cuts_accumulate_and_ctrl_u_pastes(self) -> None:
+        path = self.directory / "lines.txt"
+        path.write_text("one\ntwo\nthree", encoding="utf-8")
+        result, editor = self.run_editor(path, "\x0b\x0b\x15!\x13")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one\ntwo\n!three")
+        self.assertEqual(
+            editor.application.clipboard.get_data().text,
+            "one\ntwo\n",
+        )
+
+    def test_alt_6_copies_the_current_line_for_ctrl_u(self) -> None:
+        path = self.directory / "lines.txt"
+        path.write_text("one\ntwo", encoding="utf-8")
+        result, _editor = self.run_editor(path, "\x1b6\x15\x13")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one\none\ntwo")
+
+    def test_alt_y_rotates_the_internal_kill_ring(self) -> None:
+        path = self.directory / "lines.txt"
+        path.write_text("one\ntwo\nthree", encoding="utf-8")
+        keys = "\x0b\x06\x02\x0b\x19\x1by!\x13"
+        result, _editor = self.run_editor(path, keys)
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one\n!three")
 
     def test_save_conflict_keeps_editor_open_for_cancel(self) -> None:
         path = self.directory / "new.txt"
@@ -415,16 +478,21 @@ class PtyIntegrationTests(unittest.TestCase):
                 self.assertIn(marker, captured)
 
             try:
-                read_until(b"Ctrl-S save")
+                read_until(b"^S Save")
                 if action == "save":
                     os.write(master, b"alpha\nbeta\x13")
                 elif action == "cancel":
                     os.write(master, b"x\x03\x03")
+                elif action == "help":
+                    os.write(master, b"\x07")
+                    read_until(b"inedit help")
+                    read_until(b"Close this help")
+                    os.write(master, b"\x07\x13")
                 elif action == "sigint":
                     os.write(master, b"x")
                     read_until(b"| modifi")
                     process.send_signal(signal.SIGINT)
-                    read_until(b"Unsaved chang")
+                    read_until(b"Unsaved ch")
                     process.send_signal(signal.SIGINT)
                 elif action == "sigterm":
                     process.send_signal(signal.SIGTERM)
@@ -483,6 +551,15 @@ class PtyIntegrationTests(unittest.TestCase):
         self.assertEqual(terminated[2], b"original")
         self.assert_rendering_contract(interrupted[1], interrupted[3])
         self.assert_rendering_contract(terminated[1], terminated[3])
+
+    def test_help_renders_inline_and_returns_to_the_editor(self) -> None:
+        helped = self.run_pty_case(b"original", "help")
+
+        self.assertEqual(helped[0], 0)
+        self.assertEqual(helped[2], b"original")
+        self.assertIn(b"inedit help", helped[1])
+        self.assertIn(b"Close this help", helped[1])
+        self.assert_rendering_contract(helped[1], helped[3])
 
 
 if __name__ == "__main__":

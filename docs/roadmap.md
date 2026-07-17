@@ -26,36 +26,14 @@ key bindings, save policy, and cancellation behavior.
 
 ## Near-term priorities
 
-### 1. Make clipboard behavior coherent
+### 1. Add optional system-clipboard integration
 
-This is the highest priority. The current Emacs-mode behavior is internally
-inconsistent: `Ctrl-W`, `Ctrl-K`, `Ctrl-U`, and selection cuts populate
-prompt-toolkit's in-memory kill ring, but `inedit` overrides the normal
-`Ctrl-Y` yank binding with redo. Yanking is possible only through the obscure
-prompt-toolkit sequence `Ctrl-X`, `R`, `Y`.
-
-The target is a Nano-first keymap with an explicit `mg`/Emacs exception for
-region and kill-ring operations. In particular, `Ctrl-Y` should return to its
-Emacs meaning of yank rather than remain bound to redo. The next clipboard
-design should:
-
-- provide obvious cut, copy, and paste/yank commands shown in the status or
-  help screen;
-- keep an internal kill ring so repeated kills and yank rotation remain useful;
-- distinguish deleting text from cutting it;
-- decide whether cuts also populate the system clipboard;
-- provide a practical way to paste from the system clipboard where the
-  terminal and platform permit it;
-- keep terminal-native bracketed paste working; and
-- add focused tests for selections, whole lines, repeated kills, yank, yank
-  rotation, undo, redo, and clipboard lifetime.
-
-The preferred region family is `Ctrl-Space` to set the mark, `Ctrl-W` to cut a
-region, `Alt-W` to copy it, `Ctrl-Y` to yank, and `Alt-Y` to rotate through the
-kill ring. These are intentional `mg`/Emacs departures from Nano. Nano remains
-the precedent for ordinary line cutting and pasting, but the exact interaction
-of its `Ctrl-K`/`Ctrl-U` pair with the kill ring needs a small prototype before
-those bindings are declared settled.
+The internal clipboard and kill ring are now coherent. The default mode owns
+the `mg`/Emacs region family (`Ctrl-Space`, `Ctrl-W`, `Alt-W`, `Ctrl-Y`, and
+`Alt-Y`) alongside Nano's whole-line `Ctrl-K`, `Alt-6` copy, and `Ctrl-U`
+paste. Consecutive `Ctrl-K` cuts accumulate, deletion remains distinct from
+cutting, and focused tests cover region and line cut/copy, both paste keys,
+kill-ring rotation, undo, and redo.
 
 System-clipboard support needs a separate design because terminal applications
 cannot portably read a desktop clipboard. Options to investigate include an
@@ -63,6 +41,10 @@ optional platform command (`wl-copy`/`wl-paste`, `xclip`, or equivalents),
 terminal protocols such as OSC 52 where appropriate, and an internal-only
 fallback that always works. Clipboard integration must not introduce a hard
 desktop dependency or silently expose copied text.
+
+Keep terminal-native bracketed paste working. Decide explicitly whether an
+internal cut also populates the system clipboard and how clipboard lifetime
+works across editor invocations.
 
 ### 2. Choose a small, intentional default keymap
 
@@ -74,13 +56,14 @@ usability reason and appear in both in-editor help and [README.md](README.md).
 Nano is the broader usability model; `mg` is only a reference for the selected
 editing operations, not a second equal baseline.
 
-Tentative direction:
+Current and tentative direction:
 
 - make `Ctrl-X` initiate Nano-style exit behavior;
-- make `Ctrl-G` open Nano-style help;
-- restore `Ctrl-Y` as yank and reserve `Alt-Y` for kill-ring rotation;
-- prefer Nano's `Alt-U` and `Alt-E` for undo and redo; decide separately
-  whether `Ctrl-Z` remains as a compatibility alias;
+- keep the implemented `Ctrl-G` inline help view;
+- keep `Ctrl-Y` as yank and `Alt-Y` as kill-ring rotation;
+- keep Nano's `Alt-U` and `Alt-E` for undo and redo, with `Ctrl-Z` as an undo
+  compatibility alias;
+- keep Nano's `Ctrl-K`, `Alt-6`, and `Ctrl-U` line cut/copy/paste behavior;
 - retain movement shared by Nano and Emacs, including `Ctrl-A` and `Ctrl-E`;
 - retain `Ctrl-S` as an obvious immediate save command, but settle whether it
   saves in place or saves and exits once the `Ctrl-X` interaction exists;
@@ -103,19 +86,21 @@ the likely interaction is a compact `Save modified buffer?` prompt with save,
 discard, and return-to-editing choices. Exit statuses for each path must be
 defined before implementation.
 
-### 3. Add discoverable in-editor help
+### 3. Extend discoverable in-editor help
 
-Add a `Ctrl-G` help view based on [README.md](README.md). It should fit the
-inline rendering model, show the active mode and current keys, and return to
-the same buffer and cursor position without modifying the file. Until then,
-`docs/README.md` is the authoritative user key reference.
+The `Ctrl-G` help view is implemented. It fits the inline rendering model,
+shows the current keys, scrolls within the bounded editor body, and returns to
+the same buffer, cursor, and selection without modifying the file. Future work
+should generate or validate its content from the intentional binding registry
+and tailor the text when `--vi` is active. [README.md](README.md) remains the
+authoritative user key reference.
 
 ### 4. Reconcile the status line with the keymap
 
-Once clipboard and exit keys settle, show the most important current actions
-without making the one-row status line noisy. The full key list belongs in
-help; the status line should favor save, exit/cancel, and the active transient
-prompt.
+The one-row status line now includes `^G Help`, changing to `^G Close` while
+help is visible. Revisit the remaining hints when `Ctrl-X` exit lands, without
+making the row noisy. The full key list belongs in help; the status line should
+favor help, save, exit/cancel, and the active transient prompt.
 
 ## Goals
 
@@ -159,7 +144,7 @@ height. It contains:
 
 1. A scrollable multiline editing area using all but the last row.
 2. A one-row status line containing the shortened filename, cursor position,
-   modified state, transient errors, and `Ctrl-S save | Ctrl-C cancel`.
+   modified state, transient errors, and `^G Help | ^S Save | ^C Cancel`.
 
 Long logical lines scroll horizontally rather than soft-wrapping. The cursor's
 logical line must remain visible as it moves. The filename should be truncated
@@ -192,13 +177,18 @@ explicit first-version bindings include:
 | `Enter` | Insert a newline |
 | `Backspace`, `Delete` | Delete text |
 | `Ctrl-A`, `Ctrl-E` | Move to start/end of logical line |
-| `Ctrl-Z`, `Ctrl-Y` | Undo/redo |
+| `Ctrl-G` | Open or close inline help |
+| `Ctrl-Z`, `Alt-U` | Undo |
+| `Alt-E` | Redo |
+| `Ctrl-Space` | Start a selection |
+| `Ctrl-W`, `Alt-W` | Cut/copy a selected region |
+| `Ctrl-K`, `Alt-6` | Cut/copy a selected region or the current line |
+| `Ctrl-U`, `Ctrl-Y` | Paste/yank from the internal kill ring |
+| `Alt-Y` | Rotate the kill ring after a yank |
 | `Ctrl-S` | Save and exit successfully |
 | `Ctrl-C` | Cancel |
 
-`Ctrl-Y` as redo is current behavior, not a settled long-term choice. See the
-clipboard priority above and [README.md](README.md) for the complete current
-key reference.
+See [README.md](README.md) for the complete current key reference.
 
 In `--vi` mode, prompt_toolkit owns vi insert/normal navigation and `Escape`
 returns to normal mode. `Ctrl-S` and `Ctrl-C` retain their global meanings.

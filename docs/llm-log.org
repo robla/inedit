@@ -21,3 +21,4 @@ Conventions:
 ** Codex [2026-07-16 Thu 23:39 PDT]: Implemented the inline editor with atomic conflict-safe saves, signal-safe cleanup, and unit and PTY coverage.
 ** Codex [2026-07-17 Fri 00:45 PDT]: Documented current keys and prioritized clipboard, Nano-style exit, and in-editor help work.
 ** Codex [2026-07-17 Fri 01:17 PDT]: Established a Nano-first keymap direction with explicit =mg=/Emacs exceptions for region and kill-ring operations.
+** Codex [2026-07-17 Fri 01:31 PDT]: Implemented inline =Ctrl-G= help, Nano-style line cut/copy/paste, Emacs-style region and kill-ring operations, and updated key hints and tests.
