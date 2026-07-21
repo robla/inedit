@@ -543,7 +543,12 @@ class PtyIntegrationTests(unittest.TestCase):
         )
 
     def run_pty_case(
-        self, initial: bytes | None, action: str
+        self,
+        initial: bytes | None,
+        action: str,
+        *,
+        sentinel: bytes = b"SENTINEL-ABOVE\r\n",
+        cursor_position_response: bytes = b"\x1b[2;1R",
     ) -> tuple[int, bytes, bytes | None, bool]:
         import fcntl
         import pty
@@ -567,7 +572,7 @@ class PtyIntegrationTests(unittest.TestCase):
                 struct.pack("HHHH", 24, 80, 0, 0),
             )
             attributes_before = termios.tcgetattr(slave)
-            os.write(slave, b"SENTINEL-ABOVE\r\n")
+            os.write(slave, sentinel)
             environment = dict(os.environ)
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
             process = subprocess.Popen(
@@ -586,10 +591,10 @@ class PtyIntegrationTests(unittest.TestCase):
                 close_fds=True,
             )
             captured = bytearray()
-            answered_cursor_position_request = False
+            cursor_position_requests_answered = 0
 
             def read_until(marker: bytes) -> None:
-                nonlocal answered_cursor_position_request
+                nonlocal cursor_position_requests_answered
                 deadline = time.monotonic() + 5
                 while (
                     not self.terminal_updates_contain(captured, marker)
@@ -599,12 +604,10 @@ class PtyIntegrationTests(unittest.TestCase):
                     if readable:
                         output = os.read(master, 65536)
                         captured.extend(output)
-                        if (
-                            not answered_cursor_position_request
-                            and b"\x1b[6n" in output
-                        ):
-                            os.write(master, b"\x1b[2;1R")
-                            answered_cursor_position_request = True
+                        total_requests = bytes(captured).count(b"\x1b[6n")
+                        while cursor_position_requests_answered < total_requests:
+                            os.write(master, cursor_position_response)
+                            cursor_position_requests_answered += 1
                 self.assertTrue(
                     self.terminal_updates_contain(captured, marker),
                     f"{marker!r} was not rendered by terminal updates {captured!r}",
@@ -709,6 +712,43 @@ class PtyIntegrationTests(unittest.TestCase):
             )
         )
         self.assert_rendering_contract(prompted[1], prompted[3])
+
+    def test_editor_breaks_the_line_when_invoked_mid_row(self) -> None:
+        """Reproduces git's GIT_EDITOR hint, which ends without a newline."""
+        hint = b"hint: Waiting for your editor to close the file... "
+        result = self.run_pty_case(
+            b"original",
+            "cancel",
+            sentinel=hint,
+            cursor_position_response=b"\x1b[1;53R",
+        )
+        self.assertEqual(result[0], 130)
+        self.assertEqual(result[2], b"original")
+
+        output = result[1]
+        first_request = output.index(b"\x1b[6n")
+        second_request = output.index(b"\x1b[6n", first_request + 1)
+        gap = output[first_request + len(b"\x1b[6n") : second_request]
+        # The pty's ONLCR output processing may double the carriage return
+        # (turning our explicit "\r\n" into "\r\r\n"); either is a fresh line.
+        self.assertIn(gap, (b"\r\n", b"\r\r\n"))
+
+    def test_editor_skips_the_newline_when_already_at_column_one(self) -> None:
+        hint = b"hint: Waiting for your editor to close the file... "
+        result = self.run_pty_case(
+            b"original",
+            "cancel",
+            sentinel=hint,
+            cursor_position_response=b"\x1b[1;1R",
+        )
+        self.assertEqual(result[0], 130)
+        self.assertEqual(result[2], b"original")
+
+        output = result[1]
+        first_request = output.index(b"\x1b[6n")
+        second_request = output.index(b"\x1b[6n", first_request + 1)
+        gap = output[first_request + len(b"\x1b[6n") : second_request]
+        self.assertEqual(gap, b"")
 
 
 if __name__ == "__main__":

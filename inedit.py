@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import codecs
 import os
+import re
 import secrets
 import signal
 import stat
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -881,6 +883,65 @@ def _diagnostic(message: str) -> None:
     print(f"inedit.py: {_one_line(message)}", file=sys.stderr)
 
 
+def _guard_terminal_cursor_column(
+    stdin_fd: int, stdout_fd: int, timeout: float = 0.3
+) -> None:
+    """Move to a fresh line before prompt_toolkit paints its first frame.
+
+    Some invokers (notably git as GIT_EDITOR) print a message with no
+    trailing newline immediately before exec'ing the editor, intending to
+    overwrite it themselves later with a carriage return. prompt_toolkit's
+    inline renderer assumes the cursor already sits at column 1 and never
+    guards against this, so its first row gets painted onto the tail of
+    that leftover text instead of a blank one. Query the real cursor
+    column and, unless the terminal confirms it is already 1, emit a
+    newline before prompt_toolkit ever draws a frame.
+    """
+    if os.name != "posix":
+        return
+
+    import select
+    import termios
+
+    try:
+        original_attributes = termios.tcgetattr(stdin_fd)
+    except termios.error:
+        return
+
+    raw_attributes = termios.tcgetattr(stdin_fd)
+    raw_attributes[3] &= ~(termios.ECHO | termios.ICANON)
+    raw_attributes[6][termios.VMIN] = 0
+    raw_attributes[6][termios.VTIME] = 0
+
+    column: int | None = None
+    try:
+        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, raw_attributes)
+        os.write(stdout_fd, b"\x1b[6n")
+        buffer = b""
+        deadline = time.monotonic() + timeout
+        while column is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select([stdin_fd], [], [], remaining)
+            if not ready:
+                break
+            chunk = os.read(stdin_fd, 64)
+            if not chunk:
+                break
+            buffer += chunk
+            match = re.search(rb"\x1b\[\d+;(\d+)R", buffer)
+            if match:
+                column = int(match.group(1))
+    except OSError:
+        column = None
+    finally:
+        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, original_attributes)
+
+    if column != 1:
+        os.write(stdout_fd, b"\r\n")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     options = parse_args(argv)
 
@@ -904,6 +965,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         options,
         initial_height=initial_height,
     )
+    _guard_terminal_cursor_column(sys.stdin.fileno(), sys.stdout.fileno())
     try:
         with _termination_handlers(editor.application):
             result = editor.application.run(set_exception_handler=False)
