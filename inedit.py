@@ -8,9 +8,12 @@ import codecs
 import os
 import re
 import secrets
+import shlex
 import signal
 import stat
+import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -19,7 +22,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator
 
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.buffer import reshape_text
 from prompt_toolkit.clipboard import InMemoryClipboard
 from prompt_toolkit.enums import EditingMode
@@ -60,6 +63,9 @@ Undo and redo
 
 Formatting
   Alt-Q         Fill (reflow) the current paragraph
+
+External editor
+  Alt-V         Open the buffer in $VISUAL or $EDITOR (else vi)
 
 Movement
   Arrows        Move by character or logical line
@@ -788,6 +794,57 @@ def build_application(
         to_row, _ = document.translate_index_to_position(end)
         reshape_text(buffer, from_row, to_row)
         event.app.invalidate()
+
+    @bindings.add(
+        "escape",
+        "v",
+        filter=emacs_mode,
+        eager=True,
+    )
+    def open_in_external_editor(event: Any) -> None:
+        buffer = text_area.buffer
+
+        async def run() -> None:
+            suffix = Path(document.display_path).suffix
+            descriptor, filename = tempfile.mkstemp(suffix=suffix)
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    stream.write(buffer.text)
+
+                editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+                command = shlex.split(editor) + [filename]
+
+                def run_editor() -> int:
+                    return subprocess.call(command)
+
+                try:
+                    returncode = await run_in_terminal(run_editor, in_executor=True)
+                except OSError as exc:
+                    state.message = f"could not launch external editor: {exc}"
+                else:
+                    if returncode != 0:
+                        state.message = (
+                            f"External editor exited with status {returncode}"
+                        )
+                    else:
+                        with open(filename, "rb") as stream:
+                            data = stream.read()
+                        try:
+                            text, _newline_style, _has_bom = decode_document(data)
+                        except LoadError as exc:
+                            state.message = _one_line(str(exc))
+                        else:
+                            buffer.text = text
+                            buffer.cursor_position = 0
+                            state.message = "Applied external edit"
+            finally:
+                try:
+                    os.unlink(filename)
+                except FileNotFoundError:
+                    pass
+            event.app.invalidate()
+
+        event.app.create_background_task(run())
 
     def status_fragments() -> FormattedText:
         buffer_document = text_area.buffer.document

@@ -28,3 +28,4 @@ Conventions:
 ** Codex [2026-07-17 Fri 02:37 PDT]: Made PTY rendering assertions understand cursor-forward repaint sequences and added coverage for retained terminal cells.
 ** Claude [2026-07-20 Mon 21:33 PDT]: Fixed corrupted first-frame rendering when invoked as GIT_EDITOR, by probing the real cursor column and guarding with a newline before prompt_toolkit's first paint; added PTY regression coverage for both branches.
 ** Claude [2026-07-20 Mon 23:43 PDT]: Added Emacs-style =Alt-Q= fill-paragraph, reusing prompt-toolkit's existing paragraph-boundary detection and =gq= reflow logic instead of writing a new word-wrap algorithm.
+** Claude [2026-07-21 Tue 00:23 PDT]: Added =Alt-V= escape hatch to hand the buffer off to =$VISUAL=/=$EDITOR= (falling back to vi), using prompt-toolkit's =run_in_terminal= to suspend the inline UI; nonzero exit discards the edit, matching vi's =:cq= convention. Verified live against real =vi=.

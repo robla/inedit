@@ -797,6 +797,107 @@ class PtyIntegrationTests(unittest.TestCase):
         gap = output[first_request + len(b"\x1b[6n") : second_request]
         self.assertEqual(gap, b"")
 
+    def run_external_editor_case(
+        self, *, editor_text: str, exit_code: int
+    ) -> tuple[bytes, int, str]:
+        import fcntl
+        import pty
+        import select
+        import struct
+        import subprocess
+        import sys
+        import termios
+        import time
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "edit.txt"
+            path.write_text("original", encoding="utf-8")
+
+            fake_editor = Path(directory) / "fake_editor.sh"
+            fake_editor.write_text(
+                "#!/bin/sh\n"
+                'printf "%s" "$FAKE_EDITOR_TEXT" > "$1"\n'
+                'exit "$FAKE_EDITOR_EXIT_CODE"\n'
+            )
+            fake_editor.chmod(0o755)
+
+            master, slave = pty.openpty()
+            fcntl.ioctl(
+                slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0)
+            )
+            environment = dict(os.environ)
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            environment.pop("VISUAL", None)
+            environment["EDITOR"] = str(fake_editor)
+            environment["FAKE_EDITOR_TEXT"] = editor_text
+            environment["FAKE_EDITOR_EXIT_CODE"] = str(exit_code)
+
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(inedit.__file__).resolve()),
+                    "--height",
+                    "8",
+                    str(path),
+                ],
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                cwd=Path(inedit.__file__).parent,
+                env=environment,
+                close_fds=True,
+            )
+            captured = bytearray()
+
+            def read_until(marker: bytes) -> None:
+                deadline = time.monotonic() + 5
+                while (
+                    not self.terminal_updates_contain(captured, marker)
+                    and time.monotonic() < deadline
+                ):
+                    readable, _, _ = select.select([master], [], [], 0.1)
+                    if readable:
+                        captured.extend(os.read(master, 65536))
+                self.assertTrue(
+                    self.terminal_updates_contain(captured, marker),
+                    f"{marker!r} was not rendered by terminal updates {captured!r}",
+                )
+
+            try:
+                read_until(b"^S Save")
+                os.write(master, b"\x1bv")
+                if exit_code == 0:
+                    read_until(b"Applied external edit")
+                    os.write(master, b"\x13\x18")
+                else:
+                    # The status line truncates long messages, so match a
+                    # prefix that survives truncation.
+                    read_until(b"External editor exit")
+                    os.write(master, b"\x03")
+                returncode = process.wait(timeout=5)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                os.close(master)
+                os.close(slave)
+
+            return bytes(captured), returncode, path.read_text(encoding="utf-8")
+
+    def test_alt_v_applies_external_editor_changes(self) -> None:
+        _output, returncode, text = self.run_external_editor_case(
+            editor_text="edited by external tool", exit_code=0
+        )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(text, "edited by external tool")
+
+    def test_alt_v_discards_changes_when_external_editor_fails(self) -> None:
+        _output, returncode, text = self.run_external_editor_case(
+            editor_text="should not appear", exit_code=7
+        )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(text, "original")
+
 
 if __name__ == "__main__":
     unittest.main()
