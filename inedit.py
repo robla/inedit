@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from prompt_toolkit.application import Application
+from prompt_toolkit.buffer import reshape_text
 from prompt_toolkit.clipboard import InMemoryClipboard
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Condition
@@ -56,6 +57,9 @@ Undo and redo
   Ctrl-Z        Undo
   Ctrl-_        Undo (prompt-toolkit default)
   Alt-E         Redo
+
+Formatting
+  Alt-Q         Fill (reflow) the current paragraph
 
 Movement
   Arrows        Move by character or logical line
@@ -767,6 +771,22 @@ def build_application(
     )
     def redo(event: Any) -> None:
         text_area.buffer.redo()
+        event.app.invalidate()
+
+    @bindings.add(
+        "escape",
+        "q",
+        filter=emacs_mode,
+        eager=True,
+    )
+    def fill_paragraph(event: Any) -> None:
+        buffer = text_area.buffer
+        document = buffer.document
+        start = document.cursor_position + document.start_of_paragraph()
+        end = document.cursor_position + document.end_of_paragraph()
+        from_row, _ = document.translate_index_to_position(start)
+        to_row, _ = document.translate_index_to_position(end)
+        reshape_text(buffer, from_row, to_row)
         event.app.invalidate()
 
     def status_fragments() -> FormattedText:

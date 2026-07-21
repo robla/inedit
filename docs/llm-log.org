@@ -27,3 +27,4 @@ Conventions:
 ** Codex [2026-07-17 Fri 02:27 PDT]: Made main-screen =Ctrl-C= use the same clean-or-prompted exit behavior as =Ctrl-X= and removed the reachable double-=Ctrl-C= discard path.
 ** Codex [2026-07-17 Fri 02:37 PDT]: Made PTY rendering assertions understand cursor-forward repaint sequences and added coverage for retained terminal cells.
 ** Claude [2026-07-20 Mon 21:33 PDT]: Fixed corrupted first-frame rendering when invoked as GIT_EDITOR, by probing the real cursor column and guarding with a newline before prompt_toolkit's first paint; added PTY regression coverage for both branches.
+** Claude [2026-07-20 Mon 23:43 PDT]: Added Emacs-style =Alt-Q= fill-paragraph, reusing prompt-toolkit's existing paragraph-boundary detection and =gq= reflow logic instead of writing a new word-wrap algorithm.

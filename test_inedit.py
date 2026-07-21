@@ -339,6 +339,53 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "x")
 
+    def test_alt_q_fills_the_current_paragraph(self) -> None:
+        path = self.directory / "paragraph.txt"
+        text = (
+            "one two three four five six seven eight nine ten eleven twelve "
+            "thirteen fourteen fifteen sixteen"
+        )
+        path.write_text(text, encoding="utf-8")
+        result, _editor = self.run_editor(path, "\x1bq\x13\x18")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(
+            path.read_text(encoding="utf-8"),
+            "one two three four five six seven eight nine ten eleven twelve "
+            "thirteen fourteen\nfifteen sixteen\n",
+        )
+
+    def test_alt_q_only_reflows_the_paragraph_under_the_cursor(self) -> None:
+        path = self.directory / "paragraphs.txt"
+        text = (
+            "first paragraph line\n"
+            "\n"
+            "second paragraph has many more words that certainly exceed the "
+            "eighty column limit for wrapping purposes today and then some "
+            "more words after that"
+        )
+        path.write_text(text, encoding="utf-8")
+        result, _editor = self.run_editor(path, "\x0e\x0e\x1bq\x13\x18")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(
+            path.read_text(encoding="utf-8"),
+            "first paragraph line\n"
+            "\n"
+            "second paragraph has many more words that certainly exceed the "
+            "eighty column\nlimit for wrapping purposes today and then some "
+            "more words after that\n",
+        )
+
+    def test_alt_q_fill_is_a_single_undo_step(self) -> None:
+        path = self.directory / "paragraph.txt"
+        text = (
+            "one two three four five six seven eight nine ten eleven twelve "
+            "thirteen fourteen fifteen sixteen"
+        )
+        path.write_text(text, encoding="utf-8")
+        result, _editor = self.run_editor(path, "\x1bq\x1a\x13\x18")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), text)
+
     def test_alt_u_retains_prompt_toolkit_uppercase_word(self) -> None:
         path = self.directory / "word.txt"
         path.write_text("word", encoding="utf-8")
