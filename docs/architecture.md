@@ -63,6 +63,7 @@ class EditorState:
     discard_armed: bool = False
     help_visible: bool = False
     exit_prompt: bool = False
+    ex_command_visible: bool = False
     effective_height: int = 20
 
     def is_modified(self, current_text: str) -> bool: ...
@@ -152,26 +153,33 @@ the UI can show expected errors without exposing tracebacks.
 
 ## Application construction
 
-`build_application(document, options)` returns the application plus the state
-and text area needed by tests. Construct one persistent `TextArea` with:
+`build_application(document, options)` returns a `BuiltEditor` containing the
+application, state, editing area, help area, Ex command area, and search
+toolbar. Construct one persistent `SearchToolbar`, then attach it to the
+editing `TextArea`:
 
 ```python
-TextArea(
+search_toolbar = SearchToolbar(vi_mode=options.vi)
+text_area = TextArea(
     text=document.text,
     multiline=True,
     wrap_lines=False,
     scrollbar=True,
-    line_numbers=not options.no_line_numbers,
+    line_numbers=options.line_numbers,
     height=lambda: state.effective_height - 1,
+    search_field=search_toolbar,
 )
 ```
 
 Do not install an accept handler: Enter must insert a newline. Construct a
-second read-only, scrollable `TextArea` for help. A `DynamicContainer` selects
-the editor or help body without replacing the editing buffer. Put that body
-and a `Window(FormattedTextControl(...), height=1)` in an `HSplit` whose height
-is `lambda: state.effective_height`. Focus the text area in the `Layout`.
-Configure the application explicitly:
+second read-only, scrollable `TextArea` for help and a one-line `TextArea` for
+vi Ex commands. A `DynamicContainer` selects the editor or help body without
+replacing the editing buffer. The `HSplit` then contains that body, the search
+toolbar, and complementary conditional containers for the Ex command area and
+status window. Keeping the search toolbar in the layout even while hidden is
+required so prompt-toolkit can focus it. Exactly one footer occupies one row;
+the total height remains `state.effective_height`. Focus the editing text area
+in the `Layout` and configure the application explicitly:
 
 ```python
 Application(
@@ -186,9 +194,10 @@ Application(
 )
 ```
 
-`full_screen=False` and `erase_when_done=True` are invariants, not configuration
-choices. A later refactor should have a test that fails if either changes. In
-vi mode, the `on_reset` handler must select `InputMode.NAVIGATION` because
+`full_screen=False` is an invariant and must have a regression test. The
+current `erase_when_done=True` setting is provisional: [roadmap.md](roadmap.md)
+tracks whether retaining the final display should become the default. In vi
+mode, the `on_reset` handler must select `InputMode.NAVIGATION` because
 prompt-toolkit otherwise resets every application run to Insert mode.
 
 ### Resize behavior
@@ -199,6 +208,27 @@ container heights let prompt_toolkit apply the new value without replacing the
 buffer. Invalidate the application when the value changes. If a resize leaves
 fewer than five rows, exit the application with an error result; report the
 diagnostic only after prompt_toolkit has restored the terminal.
+
+### Exit display retention
+
+Treat terminal-mode restoration and display erasure as separate concerns.
+`Application` must always restore raw mode, bracketed paste, cursor visibility,
+and signal handlers. Whether it erases the last rendered editor region is an
+open product decision, not a terminal-safety invariant.
+
+The likely target is `erase_when_done=False` for successful exits so the final
+rendered editor view remains useful in terminal history, similar to the visible
+result users associate with `less -X`. Before adopting that target, determine
+what remains on screen for every exit path. In particular, a discard must not
+leave unsaved text looking saved, and exiting from the save prompt must not
+preserve a stale question after it has been answered. Possible policies include
+a final render with an explicit saved/discarded result, or erasing only
+canceled and abnormal sessions.
+
+If one policy works well for all normal exits, prefer it as the default without
+adding configuration. Add a CLI switch only when PTY testing or real workflows
+demonstrate a need for both retained and erased output. Tests must assert the
+cursor position for the next shell prompt as well as the retained cells.
 
 ## State and key bindings
 
@@ -336,6 +366,20 @@ default mode's `F3` binding applies that retained `SearchState` again in its
 original direction. Do not advertise `Shift-F3`: prompt-toolkit 3.0.36 and
 common terminal input protocols do not provide a portable shifted-F3 key.
 
+### Future search and replace
+
+Replacement should consume the existing accepted query and
+`BufferControl.search_state` where possible. Do not fork search matching or
+wrap behavior merely to add replacement. A small transient state machine can
+collect replacement text and offer replace, skip, all, and cancel actions in
+the same footer row used by search and Ex commands.
+
+All replacements are in-memory buffer edits until an explicit save. Group a
+replace-all operation into a useful undo transaction, define literal versus
+regular-expression behavior before exposing it, and guard against empty-match
+loops. Vi `:s` support belongs in the intentional Ex parser rather than in a
+parallel key handler; implement only the documented subset.
+
 ## Status line
 
 Generate status fragments on demand from the requested filename, the current
@@ -448,9 +492,10 @@ Use temporary directories for every filesystem test. Unit-test:
 - exact exit-status mapping.
 
 Use prompt_toolkit pipe input and dummy output for key-binding tests. Send text,
-Enter, selection, native cut/copy/yank, undo/redo, help, save, prompted exit,
-and cancel as actual input bytes and assert the application result, buffer,
-clipboard, and target bytes.
+Enter, selection, native cut/copy/yank, undo/redo, mode-specific help,
+forward/reverse/repeated search, vi Ex commands, `ZZ`, save, prompted exit, and
+cancel as actual input bytes and assert the application result, buffer,
+clipboard, search state, and target bytes.
 
 Add PTY tests for behavior that dummy output cannot prove:
 
@@ -470,9 +515,13 @@ Add PTY tests for behavior that dummy output cannot prove:
    editor remains usable.
 9. Resize the PTY, then send `SIGINT`, `SIGTERM`, and `SIGHUP`; verify cleanup,
    cursor restoration, and no implicit write.
+10. For each proposed exit-retention policy, verify the final visible cells and
+    the location where the invoking shell can safely draw its next prompt.
 
-Finally, run a manual smoke test as the editor for `dsedit` with more lines than
-the viewport, spaces in paths, a long horizontal line, save, and cancel.
+Finally, run a manual smoke test while writing a Git commit message in a
+disposable repository. Exercise a message longer than the viewport, a long
+horizontal line, save, and cancel. Test a filename containing spaces through a
+separate direct invocation.
 
 ## Build order and completion gates
 
@@ -482,7 +531,7 @@ Implement in reviewable slices:
 2. Encoding, conflict checks, atomic replacement, and filesystem tests.
 3. Editor state and pure status formatting tests.
 4. Layout and key bindings with pipe-input tests.
-5. Signal handling, PTY tests, and `dsedit` smoke testing.
+5. Signal handling, PTY tests, and Git commit-message smoke testing.
 
 A slice is complete only when its focused tests pass. Version 1 is complete
 when the entire specification is covered, captured PTY output contains no

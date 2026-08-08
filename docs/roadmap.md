@@ -3,18 +3,17 @@
 ## Status
 
 The first version of `inedit.py` is implemented as a minimal text editor for
-short-lived files such as the temporary directory-stack file created by
-`dsedit`. Its defining behavior is a fixed-height editor rendered below the
-shell prompt without switching to the terminal's alternate screen.
+short-lived files such as Git commit messages. Its defining behavior is a
+fixed-height editor rendered below the shell prompt without switching to the
+terminal's alternate screen.
 
-The implementation uses **prompt_toolkit**, not raw terminal escape sequences.
-On the environment inspected on July 16, 2026, Python 3.11.2 and
-prompt_toolkit 3.0.36 are already installed from Debian packages. That version
-provides a multiline `TextArea`, fixed dimensions, Emacs and vi editing modes,
-custom key bindings, Unicode width handling, scrolling, and an explicitly
-non-full-screen `Application`.
+The implementation uses **prompt_toolkit**, not raw terminal escape sequences,
+and targets prompt-toolkit `>=3.0.36,<4`. That baseline provides a multiline
+`TextArea`, fixed dimensions, Emacs and vi editing modes, custom key bindings,
+Unicode width handling, scrolling, and an explicitly non-full-screen
+`Application`.
 
-A pipe-input/Vt100-output probe against the installed version rendered and
+A pipe-input/Vt100-output probe against the supported baseline rendered and
 closed a fixed-height `TextArea` without emitting `CSI ? 1049 h`, `CSI ? 1047
 h`, or `CSI ? 47 h`, the common alternate-screen entry sequences. This
 verified the central rendering assumption before implementation, and PTY tests
@@ -26,7 +25,60 @@ key bindings, save policy, and cancellation behavior.
 
 ## Near-term priorities
 
-### 1. Add optional system-clipboard integration
+### 1. Add search and replace
+
+Incremental forward and reverse search is implemented through prompt-toolkit's
+native search state. Replacement should build on that state rather than create
+a second search engine. The first useful slice should support replacing the
+current match and an interactive replace/skip/all/cancel workflow, while
+keeping every replacement undoable and leaving the filesystem untouched until
+the user saves.
+
+Decide these details before assigning final keys:
+
+- whether the initial implementation is literal-only or exposes regular
+  expressions;
+- whether default mode follows Nano's `Ctrl-\`, Emacs's `Alt-%`, or offers
+  one as an alias;
+- how a replacement prompt shares the one-row footer with search, status, and
+  vi Ex commands;
+- whether the last accepted search pre-populates the find field; and
+- which vi substitution subset is supportable without pretending to implement
+  the complete Ex grammar (`:s` and `:%s` are the likely starting points).
+
+Tests should cover replace-one, skip, replace-all, cancellation, no-match and
+empty-query handling, Unicode text, replacement after search wraparound, and
+undo grouping. Documentation must clearly distinguish literal replacement from
+regular-expression replacement if both are not implemented together.
+
+### 2. Decide whether the final editor display should remain visible
+
+The current application uses `erase_when_done=True`, which removes the bounded
+editor region before returning to the shell. Evaluate a less `-X`-style user
+experience by setting it to false so the final rendered editor view remains in
+terminal history and the next shell prompt appears below it.
+
+The provisional preference is to retain the final display by default. Avoid
+adding a permanent option until testing shows that both behaviors serve real
+workflows; if both are useful, prefer an explicit `--erase-on-exit` option over
+making retention opt-in. Resolve these cases before changing the default:
+
+- a successful exit should leave a view consistent with the bytes saved;
+- discard and cancellation must not leave unsaved text looking as though it
+  was committed to disk;
+- exit from a save prompt, help view, or search prompt must not strand a stale
+  transient UI in terminal history;
+- signals and exceptions must restore terminal modes even if their display is
+  erased; and
+- retained output must work in short terminals, after resizing, and when the
+  last line is wider than the terminal.
+
+PTY coverage should locate the next shell cursor relative to the retained
+region and continue to prove that output above the editor is untouched. If the
+best policy differs by exit reason, document that explicitly rather than
+treating one `erase_when_done` value as the whole design.
+
+### 3. Add optional system-clipboard integration
 
 The internal clipboard now uses prompt-toolkit's native Emacs editing commands
 and retains only the latest cut or copy. This deliberately favors simple,
@@ -44,7 +96,7 @@ Keep terminal-native bracketed paste working. Decide explicitly whether an
 internal cut also populates the system clipboard and how clipboard lifetime
 works across editor invocations.
 
-### 2. Keep a small, prompt-toolkit-aligned default keymap
+### 4. Keep a small, prompt-toolkit-aligned default keymap
 
 Use prompt-toolkit's Emacs bindings as the editing baseline. Nano is a useful
 precedent for application-level help and exit behavior, not a reason to
@@ -80,7 +132,7 @@ returns to editing. Thus `Ctrl-C Ctrl-C` cannot discard. While the prompt is
 active, the editing buffer is read-only so an unrecognized answer cannot leak
 into the file.
 
-### 3. Extend discoverable in-editor help
+### 5. Extend discoverable in-editor help
 
 The `Ctrl-G` help view is implemented. It fits the inline rendering model,
 shows the current keys, scrolls within the bounded editor body, and returns to
@@ -91,7 +143,7 @@ commands without advertising Emacs-only shortcuts. Future work should generate
 or validate its content from the intentional binding registry.
 [README.md](README.md) remains the authoritative user key reference.
 
-### 4. Reconcile the status line with the keymap
+### 6. Reconcile the status line with the keymap
 
 The one-row status line includes `^G Help`, `^S Save`, and `^X/^C Exit`, with
 `^G Help` changing to `^G Close` while help is visible. The full key list
@@ -103,9 +155,9 @@ uses this same footer row, so neither feature changes the editor's height.
 
 - Keep shell output above the editor visible while editing.
 - Use a bounded region, 20 terminal rows by default.
-- Make `Enter` insert a newline; do not use Gum's submit-on-Enter behavior.
-- Open one named file and work as an `$EDITOR` command for tools such as
-  `dsedit`.
+- Make `Enter` insert a newline rather than submit the buffer.
+- Open one named file and work as an `$EDITOR` command for common workflows
+  such as writing Git commit messages.
 - Provide obvious save and cancel commands with a one-line reminder.
 - Never modify the file after cancellation or a failed validation/save.
 - Restore terminal modes and the cursor after normal exit, interruption, or an
@@ -123,7 +175,7 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 - `--vi` selects prompt_toolkit's vi editing mode, starting in Normal mode.
   Emacs mode is the default.
 - `--no-line-numbers` hides the line-number gutter. Numbers are shown by
-  default because callers such as `dsedit` report validation errors by line.
+  default to make multiline text easier to navigate and discuss.
 - `--` permits a filename beginning with `-`.
 - Standard `-h`/`--help` output may be supplied by `argparse`.
 
@@ -149,7 +201,7 @@ Long logical lines scroll horizontally rather than soft-wrapping. The cursor's
 logical line must remain visible as it moves. The filename should be truncated
 from the left before hiding the cursor position or key hints.
 
-The prompt_toolkit application must use:
+The current prompt_toolkit application uses:
 
 ```python
 Application(
@@ -160,9 +212,11 @@ Application(
 ```
 
 `full_screen=False` is a hard requirement: no `smcup`/`rmcup` or equivalent
-alternate-screen sequence may be emitted. `erase_when_done=True` removes the
-editor region before returning control to the shell. Output that preceded the
-invocation must remain visible and unchanged throughout the edit.
+alternate-screen sequence may be emitted. `erase_when_done=True` currently
+removes the editor region before returning control to the shell, but the
+near-term retention work above may change that value or make it depend on the
+exit result. Output that preceded the invocation must remain visible and
+unchanged throughout the edit under either policy.
 
 ## Editing behavior
 
@@ -260,33 +314,35 @@ The first implementation is one importable script with small testable units:
   and the file-change fingerprint.
 - `save_document()` performs conflict checking and atomic replacement, then
   returns the refreshed document snapshot needed for another save.
-- `EditorState` tracks the path, original text, modified state, status message,
-  and armed discard confirmation.
-- `build_application()` constructs the `TextArea`, status control, layout,
-  styles, and key bindings.
+- `EditorState` tracks the document, original text, transient views and
+  prompts, status message, and armed discard confirmation.
+- `build_application()` constructs the editing/help/command areas, search
+  toolbar, status control, conditional layout, styles, and key bindings.
 - `main()` performs preflight checks, runs the application, and maps outcomes to
   exit statuses.
 
-The central layout can be an `HSplit` containing a `TextArea` and a one-row
-`Window` backed by `FormattedTextControl`. Configure the text area with
-`multiline=True`, `wrap_lines=False`, a scrollbar, the selected line-number
-setting, and a fixed height of `effective_height - 1`. Buffer change events
-should update modified state, clear discard confirmation, and invalidate the
-status line.
+The central layout is an `HSplit` containing a dynamic editor/help body and a
+one-row footer. The footer conditionally displays the search toolbar, vi Ex
+command line, or status `Window`; the search toolbar remains in the layout
+tree even while hidden so prompt-toolkit can focus it. Configure the editing
+area with `multiline=True`, `wrap_lines=False`, a scrollbar, the selected
+line-number setting, a search field, and a fixed height of
+`effective_height - 1`. Buffer change events update modified state, clear
+discard confirmation, and invalidate the status line.
 
 Target prompt_toolkit `>=3.0.36,<4`. Do not require Rich merely to style one
 status row.
 
 ## Alternatives investigated
 
-| Option | Environment status | Assessment |
-|---|---|---|
-| **prompt_toolkit `TextArea`** | 3.0.36 installed | Recommended. Inline rendering and editor primitives are available with modest glue code. |
-| **Textual `TextArea` in inline mode** | Not installed; Debian candidate is 0.1.13 | Strong second choice. Upstream Textual 0.55+ has an official inline code-editor example and richer selection/undo behavior, but the available Debian package predates inline mode. |
-| **`curses.textpad.Textbox`** | Python standard library, installed | Supplies elementary Emacs-like editing, but normal `curses.initscr()` owns the whole screen. A small curses window does not create the required shell-friendly inline lifecycle by itself. |
-| **Urwid `Edit`** | 2.1.2 installed | Mature editor widget, but the normal display and event-loop model is screen-oriented. A custom inline screen adapter would be more work than the prompt_toolkit implementation. |
-| **Raw `termios` + ANSI** | Standard library only | Maximum control and no package dependency, but requires implementing escape parsing, Unicode cell widths, bracketed paste, scrolling, resize handling, and crash-safe terminal restoration. Consider only as a deliberate second implementation. |
-| **Rich or readline** | Rich and Python readline available | Neither provides a bounded multiline editor. Rich renders output; readline edits command lines. |
+| Option | Assessment |
+|---|---|
+| **prompt_toolkit `TextArea`** | Selected. Inline rendering and editor primitives are available with modest glue code. |
+| **Textual `TextArea` in inline mode** | A credible alternative with a richer editor widget, but switching would add a larger dependency and replace working prompt-toolkit behavior. |
+| **`curses.textpad.Textbox`** | Part of the Python standard library and supplies elementary Emacs-like editing, but normal `curses.initscr()` owns the whole screen. A small curses window does not create the required shell-friendly inline lifecycle by itself. |
+| **Urwid `Edit`** | Mature editor widget, but its normal display and event-loop model is screen-oriented. A custom inline screen adapter would be more work than the prompt-toolkit implementation. |
+| **Raw `termios` + ANSI** | Maximum control and no package dependency, but requires implementing escape parsing, Unicode cell widths, bracketed paste, scrolling, resize handling, and crash-safe terminal restoration. Consider only as a deliberate second implementation. |
+| **Rich or readline** | Neither provides a bounded multiline editor. Rich renders output; readline edits command lines. |
 
 Textual's upstream example is notably close to the requested UI:
 
@@ -305,9 +361,9 @@ class InlineApp(App):
 InlineApp().run(inline=True)
 ```
 
-It is worth revisiting if a current Textual package becomes easy to install.
-For the present environment, prompt_toolkit reaches the same essential result
-without changing Python package sources.
+It is worth revisiting if prompt-toolkit becomes a limiting factor. For now,
+prompt-toolkit reaches the required result without replacing the established
+editing behavior.
 
 ## Ongoing verification
 
@@ -317,7 +373,9 @@ new-file creation, permission preservation, conflict detection, and cleanup
 after failed saves.
 
 Prompt behavior is tested with prompt_toolkit's pipe-input and dummy-output
-helpers. PTY integration tests:
+helpers, including mode-specific help, search and repetition in both keymaps,
+vi Ex commands, `ZZ`, clipboard operations, save, and safe exit. PTY
+integration tests:
 
 - Start the editor in an 80x24 pseudo-terminal with recognizable output above
   it and verify that output remains present.
@@ -331,20 +389,22 @@ helpers. PTY integration tests:
   continues without overwriting the target.
 - Send resize and termination signals and verify terminal cleanup.
 
-Finally, test manually as a `dsedit` editor:
+Finally, test manually while composing a Git commit message in a disposable
+repository with a staged change:
 
 ```bash
-EDITOR='python3 /path/to/inedit.py' dsedit
+GIT_EDITOR='python3 /path/to/inedit.py' git commit
 ```
 
-Use a directory stack longer than the viewport and include paths containing
-spaces and long paths requiring horizontal scrolling.
+Exercise a multiline message longer than the viewport, a long line requiring
+horizontal scrolling, save, and cancellation. Add separate direct-file smoke
+tests for filenames containing spaces.
 
 ## Continuing non-goals
 
 - Multiple files, tabs, split views, syntax highlighting, or plugins.
-- Search-and-replace, macros, or Ex commands beyond the small
-  `:w`/`:q`/`:wq`/`:h`/`:external` set.
+- Macros or Ex commands beyond the small documented set, except for the
+  deliberately scoped substitution commands considered above.
 - Mouse selection. System-clipboard integration is now a near-term roadmap
   item, but must remain optional and terminal-safe.
 - Arbitrary encodings or binary-file editing.

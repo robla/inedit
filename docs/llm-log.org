@@ -36,3 +36,4 @@ Conventions:
 ** Codex [2026-08-07 Fri 19:16 PDT]: Added the inedit-specific =:external= vi Ex command, sharing the existing =$VISUAL=/=$EDITOR= handoff used by default-mode =Alt-V=.
 ** Codex [2026-08-07 Fri 19:45 PDT]: Added prompt-toolkit incremental search with selection-sensitive =Ctrl-W= and reverse/repeat controls in default mode, native vi =/=, =?=, =n=, and =N= search, an inline footer prompt, documentation, and regression coverage.
 ** Codex [2026-08-07 Fri 19:58 PDT]: Added vi Normal-mode =ZZ= with write-if-modified and exit semantics, including unchanged-file and help coverage.
+** Codex [2026-08-07 Fri 20:36 PDT]: Reoriented documentation around general-purpose Git commit-message editing, promoted search-and-replace and exit-display retention to near-term design work, and refreshed the architecture and verification plan for current features.

@@ -2,12 +2,14 @@
 
 `inedit.py` is a small editor that stays in the terminal's normal screen. It
 uses a bounded region below the shell prompt, leaves earlier shell output
-visible, and returns when the file is saved or the edit is canceled.
+visible, and returns control to the caller when the editing session exits. Git
+commit messages are a typical use, but it can edit any one named UTF-8 text
+file.
 
 This page documents the current behavior. Proposed changes are tracked in
 [roadmap.md](roadmap.md). Text editing follows prompt-toolkit's default Emacs
 bindings wherever practical. Nano inspires application-level controls such as
-help and the planned exit flow, rather than replacing the editing engine.
+help and the exit flow, rather than replacing the editing engine.
 
 ## Starting the editor
 
@@ -21,6 +23,12 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
   Emacs mode is the default.
 - `--no-line-numbers` hides the line-number gutter.
 - `--` permits a filename beginning with `-`.
+
+For example, use it for one Git commit without changing global configuration:
+
+```bash
+GIT_EDITOR='/absolute/path/to/inedit.py' git commit
+```
 
 ## Key notation
 
@@ -205,8 +213,15 @@ save/discard prompt instead of vi-style `:q` behavior.
 | `2` | Command-line usage error |
 | `130` | Exited through cancellation or `N`; any earlier `Ctrl-S` save remains on disk |
 
+The current version erases its bounded editor region on exit. Retaining the
+final rendered editor view in terminal history—similar to the visible result
+associated with `less -X`—is planned for evaluation; see
+[roadmap.md](roadmap.md). Terminal modes and cursor visibility must be restored
+regardless of which display policy is selected.
+
 ## Current limitations
 
 - No direct system-clipboard integration.
-- No search-and-replace command, syntax highlighting, mouse selection,
-  multiple files, or crash-recovery file.
+- Search and replace is planned but not yet implemented.
+- No syntax highlighting, mouse selection, multiple files, or crash-recovery
+  file.
