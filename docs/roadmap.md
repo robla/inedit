@@ -7,7 +7,8 @@ short-lived files such as Git commit messages. Its defining behavior is a
 bounded-height editor rendered below the shell prompt without switching to the
 terminal's alternate screen. `Alt-Up` and `Alt-Down` adjust that height during
 the current session; their `Height: N` feedback clears one second after the
-most recent adjustment.
+most recent adjustment. With no explicit height, the editor automatically uses
+7–20 text rows plus its footer and grows with the buffer.
 
 The implementation uses **prompt_toolkit**, not raw terminal escape sequences,
 and targets prompt-toolkit `>=3.0.36,<4`. That baseline provides a multiline
@@ -154,26 +155,26 @@ belongs in help; the status line should favor help, save, exit, and the active
 transient prompt. An active incremental search or vi Ex command temporarily
 uses this same footer row, so neither feature changes the editor's height.
 
-### 7. Evaluate a content-aware default height
+### 7. Refine content-aware automatic height
 
-Runtime height adjustment is independent of the startup policy: editor state
-keeps a mutable requested session height separately from the terminal-capped
-effective height. A future default may use the loaded document to choose a
-smaller initial region—for example, seven text rows plus the footer for a
-seven-line file—when neither `--height` nor `INEDIT_HEIGHT` was explicitly
-provided.
+Content-aware height is implemented. Unset or `auto` configuration selects
+7–20 logical text rows plus the one-row footer. A trailing newline contributes
+the editable blank row after it. The region grows silently as the buffer gains
+rows, never shrinks automatically, and stops growing automatically after the
+first `Alt-Up` or `Alt-Down` adjustment.
 
-Before adopting that policy, define how empty files, a final newline, long
-wrapped display lines, the help view, and short terminals affect the count.
-Explicit command-line and environment values should continue to take
-precedence, and the automatic choice should remain bounded by the same
-four-row minimum and one-outside-row maximum.
+Numeric `--height` and `INEDIT_HEIGHT` values retain their earlier meaning as
+fixed requested total heights; `--height auto` can override a numeric
+environment value. Automatic limits do not constrain explicit or manual
+heights. Add a separate `--max-height`/`INEDIT_MAX_HEIGHT` only if real usage
+demonstrates a need to customize the automatic ceiling without selecting a
+fixed height.
 
 ## Goals
 
 - Keep shell output above the editor visible while editing.
-- Use a bounded region, initially 20 terminal rows by default and adjustable
-  during editing.
+- Use a bounded region, automatically sized to 7–20 text rows plus the footer
+  by default and adjustable during editing.
 - Make `Enter` insert a newline rather than submit the buffer.
 - Open one named file and work as an `$EDITOR` command for common workflows
   such as writing Git commit messages.
@@ -185,12 +186,15 @@ four-row minimum and one-outside-row maximum.
 ## Command-line interface
 
 ```text
-inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
+inedit.py [--height ROWS|auto] [--vi] [--no-line-numbers] FILE
 ```
 
 - `FILE` is required. One file is supported.
-- `--height ROWS` sets the initial total rendered height, including the status
-  line. The default is `${INEDIT_HEIGHT:-20}`.
+- `--height ROWS` sets a fixed requested total height, including the status
+  line. `--height auto` selects content-aware sizing. An explicit option
+  overrides `INEDIT_HEIGHT`, which accepts the same numeric or `auto` values.
+- When neither source supplies a numeric height, use 7–20 logical text rows
+  plus the footer and grow with the buffer until manually adjusted.
 - `--vi` selects prompt_toolkit's vi editing mode, starting in Normal mode.
   Emacs mode is the default.
 - `--no-line-numbers` hides the line-number gutter. Numbers are shown by
@@ -198,10 +202,11 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 - `--` permits a filename beginning with `-`.
 - Standard `-h`/`--help` output may be supplied by `argparse`.
 
-`ROWS` must be at least 4. `Alt-Up` and `Alt-Down` adjust the requested session
-height one row at a time. At runtime, the editor caps its effective height so
-that at least one terminal row remains outside the application. A terminal too
-small for a four-row editor is an error.
+Numeric `ROWS` must be at least 4. `Alt-Up` and `Alt-Down` adjust the requested
+session height one row at a time and disable further automatic growth. At
+runtime, the editor caps its effective height so that at least one terminal row
+remains outside the application. A terminal too small for a four-row editor is
+an error.
 
 Reading file content from stdin and writing edited content to stdout are out of
 scope for version 1. The user interface requires a TTY. Diagnostics go to
@@ -335,9 +340,9 @@ The first implementation is one importable script with small testable units:
   and the file-change fingerprint.
 - `save_document()` performs conflict checking and atomic replacement, then
   returns the refreshed document snapshot needed for another save.
-- `EditorState` tracks the document, original text, requested and effective
-  heights, transient views and prompts, status message, and armed discard
-  confirmation.
+- `EditorState` tracks the document, original text, automatic-height mode,
+  requested and effective heights, transient views and prompts, status message,
+  and armed discard confirmation.
 - `build_application()` constructs the editing/help/command areas, search
   toolbar, status control, conditional layout, styles, and key bindings.
 - `main()` performs preflight checks, runs the application, and maps outcomes to
@@ -389,8 +394,9 @@ editing behavior.
 
 ## Ongoing verification
 
-Unit tests cover and should continue to cover argument parsing, initial and
-runtime height adjustment and capping,
+Unit tests cover and should continue to cover fixed and automatic height
+parsing, content-driven growth, manual takeover, runtime adjustment and
+capping,
 UTF-8/BOM handling, LF and CRLF preservation, final-newline preservation,
 new-file creation, permission preservation, conflict detection, and cleanup
 after failed saves.

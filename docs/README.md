@@ -14,11 +14,15 @@ help and the exit flow, rather than replacing the editing engine.
 ## Starting the editor
 
 ```text
-inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
+inedit.py [--height ROWS|auto] [--vi] [--no-line-numbers] FILE
 ```
 
-- `--height ROWS` sets the initial total editor height. The default is
-  `${INEDIT_HEIGHT:-20}`. The height can be adjusted during the session.
+- With no height setting, the editor automatically uses 7–20 text rows based
+  on the file, plus its one-row footer.
+- `--height ROWS` requests a fixed total height, including the footer.
+  `--height auto` explicitly selects adaptive sizing.
+- `INEDIT_HEIGHT` accepts the same numeric or `auto` values. An explicit
+  command-line value overrides it.
 - `--vi` selects prompt-toolkit's vi editing mode, starting in Normal mode.
   Emacs mode is the default.
 - `--no-line-numbers` hides the line-number gutter.
@@ -72,21 +76,34 @@ prompt and the second returns to editing.
 
 ## Display height
 
+In automatic mode, the editor starts with one text row per logical buffer row,
+bounded to 7–20 text rows, plus the footer. An empty file therefore occupies
+eight total rows. A trailing newline contributes an editable trailing blank
+row. The editor grows silently when editing adds enough logical rows, up to 20
+text rows; it does not automatically shrink after deletions.
+
+A numeric `--height` or `INEDIT_HEIGHT` value disables content-driven sizing
+and keeps its existing meaning as a fixed requested total height. Use
+`--height auto` to override a numeric environment setting for one invocation.
+
 `Alt-Up` reduces the total editor height by one row and `Alt-Down` increases it
 by one row. These commands work in both editing modes and in the help, search,
 and vi Ex views. Each adjustment lasts for the current invocation only; it does
-not change `INEDIT_HEIGHT` in the parent shell.
+not change `INEDIT_HEIGHT` in the parent shell. The first manual adjustment
+disables automatic growth for the rest of the invocation. The automatic
+20-text-row ceiling does not restrict manual expansion.
 
 The resulting `Height: N` message appears in the ordinary status line for
 about one second after the most recent adjustment. Repeated adjustments restart
 that interval. Afterward, the filename and normal status information return;
 the timer never clears a newer save, warning, or error message.
 
-The minimum total height is four rows, including the one-row footer. Expansion
-stops with one terminal row still outside the application. When a terminal
-resize temporarily limits the editor, it can return to its requested session
-height when room becomes available. A deliberate height adjustment instead
-uses the currently visible height as its starting point.
+Numeric and manually adjusted heights have a minimum total height of four rows,
+including the footer. Expansion stops with one terminal row still outside the
+application. When a terminal resize temporarily limits the editor, it can
+return to its requested session height when room becomes available. A
+deliberate height adjustment instead uses the currently visible height as its
+starting point.
 
 ## Cutting, copying, and yanking
 

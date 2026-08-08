@@ -50,8 +50,9 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 from prompt_toolkit.widgets import SearchToolbar, TextArea
 
-DEFAULT_HEIGHT = 20
 MINIMUM_HEIGHT = 4
+AUTO_MINIMUM_TEXT_ROWS = 7
+AUTO_MAXIMUM_TEXT_ROWS = 20
 HEIGHT_MESSAGE_SECONDS = 1.0
 SIGNAL_DISCARD_MESSAGE = "Unsaved changes; interrupt again to discard"
 EXIT_PROMPT = "Save modified buffer? Y Yes | N No | ^C Cancel"
@@ -242,7 +243,7 @@ class Document:
 @dataclass(frozen=True)
 class EditorOptions:
     path: Path
-    height: int
+    height: int | None
     vi: bool
     line_numbers: bool
 
@@ -256,8 +257,9 @@ class EditorState:
     help_visible: bool = False
     exit_prompt: bool = False
     ex_command_visible: bool = False
-    requested_height: int = DEFAULT_HEIGHT
-    effective_height: int = DEFAULT_HEIGHT
+    auto_height: bool = False
+    requested_height: int = AUTO_MINIMUM_TEXT_ROWS + 1
+    effective_height: int = AUTO_MINIMUM_TEXT_ROWS + 1
 
     def is_modified(self, current_text: str) -> bool:
         return current_text != self.original_text
@@ -297,6 +299,12 @@ def _height_value(value: str) -> int:
     return height
 
 
+def _height_setting(value: str) -> int | None:
+    if value.casefold() == "auto":
+        return None
+    return _height_value(value)
+
+
 def parse_args(
     argv: Sequence[str] | None = None,
     environ: Mapping[str, str] | None = None,
@@ -313,9 +321,13 @@ def parse_args(
     )
     parser.add_argument(
         "--height",
-        metavar="ROWS",
-        type=_height_value,
-        help="initial total editor height (default: INEDIT_HEIGHT or 20)",
+        metavar="ROWS|auto",
+        type=_height_setting,
+        default=argparse.SUPPRESS,
+        help=(
+            "fixed total height, or adaptive sizing "
+            "(default: INEDIT_HEIGHT or auto)"
+        ),
     )
     parser.add_argument(
         "--vi",
@@ -331,14 +343,14 @@ def parse_args(
     namespace = parser.parse_args(argv)
 
     environment = os.environ if environ is None else environ
-    if namespace.height is None:
-        raw_height = environment.get("INEDIT_HEIGHT", str(DEFAULT_HEIGHT))
+    if hasattr(namespace, "height"):
+        height = namespace.height
+    else:
+        raw_height = environment.get("INEDIT_HEIGHT", "auto")
         try:
-            height = _height_value(raw_height)
+            height = _height_setting(raw_height)
         except argparse.ArgumentTypeError as exc:
             parser.error(f"INEDIT_HEIGHT {exc}")
-    else:
-        height = namespace.height
 
     return EditorOptions(
         path=Path(namespace.file),
@@ -625,6 +637,28 @@ def effective_height(configured_height: int, terminal_rows: int) -> int:
     return min(configured_height, terminal_rows - 1)
 
 
+def logical_text_rows(text: str) -> int:
+    """Count prompt-toolkit-style logical rows, including a trailing blank."""
+
+    return text.count("\n") + 1
+
+
+def automatic_height(text: str) -> int:
+    """Return adaptive total height: 7-20 text rows plus one footer."""
+
+    text_rows = min(
+        max(logical_text_rows(text), AUTO_MINIMUM_TEXT_ROWS),
+        AUTO_MAXIMUM_TEXT_ROWS,
+    )
+    return text_rows + 1
+
+
+def initial_requested_height(document: Document, options: EditorOptions) -> int:
+    if options.height is not None:
+        return options.height
+    return automatic_height(document.text)
+
+
 def adjusted_height(current_height: int, delta: int, terminal_rows: int) -> int:
     """Return a one-session height adjustment within terminal-safe bounds."""
 
@@ -747,13 +781,17 @@ def build_application(
 ) -> BuiltEditor:
     """Construct the prompt_toolkit application and its mutable editor state."""
 
+    requested_initial_height = initial_requested_height(document, options)
     effective_initial_height = (
-        initial_height if initial_height is not None else options.height
+        initial_height
+        if initial_height is not None
+        else requested_initial_height
     )
     state = EditorState(
         document=document,
         original_text=document.text,
-        requested_height=options.height,
+        auto_height=options.height is None,
+        requested_height=requested_initial_height,
         effective_height=effective_initial_height,
     )
     search_toolbar = SearchToolbar(vi_mode=options.vi)
@@ -795,6 +833,22 @@ def build_application(
         state.discard_armed = False
         state.exit_prompt = False
         state.message = None
+        if state.auto_height:
+            content_height = automatic_height(text_area.buffer.text)
+            if content_height > state.requested_height:
+                state.requested_height = content_height
+                if application_reference:
+                    application = application_reference[0]
+                    rows = application.output.get_size().rows
+                    try:
+                        state.effective_height = effective_height(
+                            state.requested_height,
+                            rows,
+                        )
+                    except TerminalError as exc:
+                        application.exit(
+                            result=EditorResult(ExitReason.ERROR, str(exc))
+                        )
         invalidate()
 
     text_area.buffer.on_text_changed += buffer_changed
@@ -917,6 +971,7 @@ def build_application(
     def adjust_editor_height(event: Any, delta: int) -> None:
         nonlocal height_message_generation
 
+        state.auto_height = False
         rows = event.app.output.get_size().rows
         try:
             new_height = adjusted_height(
@@ -1430,7 +1485,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         document = load_document(options.path)
         terminal_rows = os.get_terminal_size(sys.stdout.fileno()).lines
-        initial_height = effective_height(options.height, terminal_rows)
+        requested_height = initial_requested_height(document, options)
+        initial_height = effective_height(requested_height, terminal_rows)
     except IneditError as exc:
         _diagnostic(str(exc))
         return 1

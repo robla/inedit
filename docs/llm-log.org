@@ -39,3 +39,4 @@ Conventions:
 ** Codex [2026-08-07 Fri 20:36 PDT]: Reoriented documentation around general-purpose Git commit-message editing, promoted search-and-replace and exit-display retention to near-term design work, and refreshed the architecture and verification plan for current features.
 ** Codex [2026-08-07 Fri 21:15 PDT]: Added session-local =Alt-Up=/=Alt-Down= height adjustment with separate requested and terminal-capped effective heights, mode-specific help, documentation, and unit and PTY coverage.
 ** Codex [2026-08-07 Fri 21:37 PDT]: Made runtime height feedback expire one second after the last adjustment using a debounced background task that preserves newer status messages.
+** Codex [2026-08-07 Fri 22:44 PDT]: Replaced the fixed default height with grow-only content-aware sizing of 7–20 text rows plus the footer, while preserving numeric height overrides and manual runtime control.

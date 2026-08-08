@@ -64,8 +64,9 @@ class EditorState:
     help_visible: bool = False
     exit_prompt: bool = False
     ex_command_visible: bool = False
-    requested_height: int = 20
-    effective_height: int = 20
+    auto_height: bool = False
+    requested_height: int = 8
+    effective_height: int = 8
 
     def is_modified(self, current_text: str) -> bool: ...
 
@@ -90,7 +91,8 @@ claiming to provide file locking.
 
 Compute modified state as `buffer.text != original_text`; do not maintain a
 one-way dirty bit. Undoing all changes must return the buffer to the unmodified
-state. Keep `requested_height` as the mutable per-session target and
+state. `auto_height` records whether buffer growth may still enlarge the
+region. Keep `requested_height` as the mutable per-session target and
 `effective_height` as the value currently permitted by the terminal. This
 separation lets startup policy, user adjustment, and terminal capping evolve
 independently.
@@ -100,14 +102,14 @@ independently.
 `parse_args(argv, environ)` should build an `argparse.ArgumentParser` for:
 
 ```text
-inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
+inedit.py [--height ROWS|auto] [--vi] [--no-line-numbers] FILE
 ```
 
 Implement startup in this order:
 
-1. Read `INEDIT_HEIGHT`, defaulting to `20`, and let an explicit `--height`
-   override it. Parse both through one integer validator that rejects values
-   below 4. `argparse` reports these failures and returns status 2.
+1. Let an explicit `--height` override `INEDIT_HEIGHT`. Each accepts `auto` or
+   an integer; reject numeric values below 4. Unset configuration means `auto`.
+   `argparse` reports invalid values and returns status 2.
 2. Let `argparse` handle `-h`, `--help`, one required path, extra operands, and
    the `--` separator.
 3. Require both stdin and stdout to be TTYs. Print a concise diagnostic to
@@ -116,8 +118,10 @@ Implement startup in this order:
    leave terminal modes changed.
 5. Read the output terminal size. If it has fewer than five rows, report that
    a four-row editor plus one outside row cannot fit and return 1.
-6. Set the initial effective height to
-   `min(configured_height, terminal_rows - 1)`.
+6. For a numeric setting, use that fixed requested total height. For `auto`,
+   count logical buffer rows as `text.count("\n") + 1`, clamp that count to
+   7–20 text rows, and add one footer row. Set the initial effective height to
+   `min(requested_height, terminal_rows - 1)`.
 7. Build and run the application, map its result to 0, 1, or 130, and keep
    successful operation silent.
 
@@ -206,13 +210,24 @@ prompt-toolkit otherwise resets every application run to Insert mode.
 
 ### Resize behavior
 
-Initialize `state.requested_height` from the configured startup height and set
-`state.effective_height` to its initial terminal-capped value. Before each
-render, obtain the current output size and update the effective height to
-`min(state.requested_height, rows - 1)`. The callable container heights let
-prompt_toolkit apply the new value without replacing the buffer. If a resize
-leaves fewer than five rows, exit the application with an error result; report
-the diagnostic only after prompt_toolkit has restored the terminal.
+For numeric configuration, initialize `state.requested_height` from that fixed
+total height and leave `state.auto_height` false. For unset or `auto`
+configuration, set `auto_height` true and derive the requested total height by
+clamping the logical buffer row count to 7–20 and adding the footer. A trailing
+newline therefore contributes an editable blank logical row.
+
+While automatic mode remains active, buffer-change events may increase the
+requested height up to 21 total rows; they never decrease it. Automatic growth
+is silent. Any `Alt-Up` or `Alt-Down` press sets `auto_height` false before
+applying the adjustment, even when the terminal boundary prevents a visible
+change. Manual adjustment may exceed the automatic ceiling.
+
+Before each render, obtain the current output size and update the effective
+height to `min(state.requested_height, rows - 1)`. The callable container
+heights let prompt_toolkit apply the new value without replacing the buffer. If
+a resize leaves fewer than five rows, exit the application with an error
+result; report the diagnostic only after prompt_toolkit has restored the
+terminal.
 
 Bind `Alt-Up` and `Alt-Down` as the `(Escape, Up)` and `(Escape, Down)` key
 sequences emitted by common terminals. They reduce or increase the height by
@@ -230,11 +245,6 @@ height the user can see. When an adjustment actually changes that value, make
 the result the new requested session height. At a boundary, leave the requested
 height alone; this preserves a larger target that may become usable again after
 a terminal resize.
-
-A future content-aware startup policy should compute the initial requested
-height before terminal capping, and only when neither `--height` nor
-`INEDIT_HEIGHT` was supplied explicitly. It should not require changes to the
-runtime adjustment or layout code.
 
 ### Exit display retention
 
@@ -501,9 +511,10 @@ future debug option. No exception handler may attempt an implicit save.
 
 Use temporary directories for every filesystem test. Unit-test:
 
-- argument and environment height parsing, including `--` filenames;
-- initial and resized height capping, one-row runtime adjustment, and minimum
-  and maximum bounds;
+- argument and environment parsing for numeric, `auto`, override, and `--`
+  filename cases;
+- automatic initial sizing, grow-only buffer sizing, manual takeover, initial
+  and resized height capping, one-row runtime adjustment, and bounds;
 - UTF-8, UTF-8 BOM, decode errors, and NUL rejection;
 - LF, CRLF, mixed endings, bare CR, empty files, and final-newline retention;
 - existing files, new files, symlinks, dangling symlinks, and rejected types;

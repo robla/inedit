@@ -21,7 +21,7 @@ class ArgumentTests(unittest.TestCase):
     def test_defaults_and_switches(self) -> None:
         options = inedit.parse_args(["--vi", "--no-line-numbers", "file.txt"], {})
         self.assertEqual(options.path, Path("file.txt"))
-        self.assertEqual(options.height, 20)
+        self.assertIsNone(options.height)
         self.assertTrue(options.vi)
         self.assertFalse(options.line_numbers)
 
@@ -32,6 +32,16 @@ class ArgumentTests(unittest.TestCase):
         )
         self.assertEqual(from_environment.height, 9)
         self.assertEqual(overridden.height, 12)
+
+    def test_auto_height_can_be_selected_explicitly(self) -> None:
+        from_environment = inedit.parse_args(
+            ["file"], {"INEDIT_HEIGHT": "auto"}
+        )
+        command_line_override = inedit.parse_args(
+            ["--height", "auto", "file"], {"INEDIT_HEIGHT": "9"}
+        )
+        self.assertIsNone(from_environment.height)
+        self.assertIsNone(command_line_override.height)
 
     def test_invalid_environment_height_is_usage_error(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
@@ -242,17 +252,28 @@ class LayoutAndStateTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
 
-    def options(self, path: Path, *, vi: bool = False) -> inedit.EditorOptions:
-        return inedit.EditorOptions(path, 8, vi, True)
+    def options(
+        self,
+        path: Path,
+        *,
+        vi: bool = False,
+        height: int | None = 8,
+    ) -> inedit.EditorOptions:
+        return inedit.EditorOptions(path, height, vi, True)
 
     def run_editor(
-        self, path: Path, keys: str, *, vi: bool = False
+        self,
+        path: Path,
+        keys: str,
+        *,
+        vi: bool = False,
+        height: int | None = 8,
     ) -> tuple[inedit.EditorResult, inedit.BuiltEditor]:
         document = inedit.load_document(path)
         with create_pipe_input() as pipe:
             editor = inedit.build_application(
                 document,
-                self.options(path, vi=vi),
+                self.options(path, vi=vi, height=height),
                 input=pipe,
                 output=DummyOutput(),
             )
@@ -271,6 +292,95 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertEqual(inedit.adjusted_height(8, 1, 24), 9)
         self.assertEqual(inedit.adjusted_height(4, -1, 24), 4)
         self.assertEqual(inedit.adjusted_height(8, 1, 9), 8)
+
+    def test_automatic_height_uses_seven_to_twenty_text_rows(self) -> None:
+        twelve_rows = "\n".join(["line"] * 12)
+        twenty_rows = "\n".join(["line"] * 20)
+        twenty_one_rows = twenty_rows + "\n"
+
+        self.assertEqual(inedit.logical_text_rows(""), 1)
+        self.assertEqual(inedit.logical_text_rows("line\n"), 2)
+        self.assertEqual(inedit.automatic_height(""), 8)
+        self.assertEqual(inedit.automatic_height(twelve_rows), 13)
+        self.assertEqual(inedit.automatic_height(twenty_rows), 21)
+        self.assertEqual(inedit.automatic_height(twenty_one_rows), 21)
+
+    def test_auto_height_initializes_from_document_size(self) -> None:
+        path = self.directory / "twelve-lines.txt"
+        path.write_text("\n".join(["line"] * 12), encoding="utf-8")
+        document = inedit.load_document(path)
+        with create_pipe_input() as pipe:
+            editor = inedit.build_application(
+                document,
+                self.options(path, height=None),
+                input=pipe,
+                output=DummyOutput(),
+            )
+        self.assertTrue(editor.state.auto_height)
+        self.assertEqual(editor.state.requested_height, 13)
+        self.assertEqual(editor.state.effective_height, 13)
+
+    def test_auto_height_grows_with_the_buffer(self) -> None:
+        path = self.directory / "new.txt"
+        result, editor = self.run_editor(
+            path,
+            "\n" * 7 + "\x18y",
+            height=None,
+        )
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertTrue(editor.state.auto_height)
+        self.assertEqual(editor.state.requested_height, 9)
+        self.assertEqual(editor.state.effective_height, 9)
+
+    def test_auto_height_does_not_shrink_after_deleting_lines(self) -> None:
+        path = self.directory / "eight-lines.txt"
+        path.write_text("\n" * 7, encoding="utf-8")
+        result, editor = self.run_editor(
+            path,
+            "\x0b\x18y",
+            height=None,
+        )
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertTrue(editor.state.auto_height)
+        self.assertEqual(editor.state.requested_height, 9)
+        self.assertEqual(editor.state.effective_height, 9)
+
+    def test_manual_adjustment_disables_auto_growth(self) -> None:
+        path = self.directory / "new.txt"
+        result, editor = self.run_editor(
+            path,
+            "\x1b[1;3B" + "\n" * 9 + "\x18y",
+            height=None,
+        )
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertFalse(editor.state.auto_height)
+        self.assertEqual(editor.state.requested_height, 9)
+        self.assertEqual(editor.state.effective_height, 9)
+
+    def test_numeric_height_does_not_grow_with_the_buffer(self) -> None:
+        path = self.directory / "new.txt"
+        result, editor = self.run_editor(
+            path,
+            "\n" * 9 + "\x18y",
+            height=8,
+        )
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertFalse(editor.state.auto_height)
+        self.assertEqual(editor.state.requested_height, 8)
+        self.assertEqual(editor.state.effective_height, 8)
+
+    def test_manual_expansion_can_exceed_the_automatic_ceiling(self) -> None:
+        path = self.directory / "twenty-lines.txt"
+        path.write_text("\n".join(["line"] * 20), encoding="utf-8")
+        result, editor = self.run_editor(
+            path,
+            "\x1b[1;3B\x18",
+            height=None,
+        )
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertFalse(editor.state.auto_height)
+        self.assertEqual(editor.state.requested_height, 22)
+        self.assertEqual(editor.state.effective_height, 22)
 
     def test_startup_request_is_distinct_from_initial_terminal_cap(self) -> None:
         path = self.directory / "new.txt"
@@ -1133,9 +1243,9 @@ class PtyIntegrationTests(unittest.TestCase):
             command = [
                 sys.executable,
                 str(Path(inedit.__file__).resolve()),
-                "--height",
-                "8",
             ]
+            if action != "auto_default":
+                command.extend(("--height", "8"))
             if action in ("vi_modes", "vi_ex"):
                 command.append("--vi")
             command.append(str(path))
@@ -1205,6 +1315,8 @@ class PtyIntegrationTests(unittest.TestCase):
                     read_until(b"Height: 7")
                     os.write(master, b"\x1b[1;3B")
                     read_until(b"Height: 8")
+                    os.write(master, b"\x18")
+                elif action == "auto_default":
                     os.write(master, b"\x18")
                 elif action == "sigint":
                     os.write(master, b"x")
@@ -1338,6 +1450,13 @@ class PtyIntegrationTests(unittest.TestCase):
             self.terminal_updates_contain(resized[1], b"Height: 8")
         )
         self.assert_rendering_contract(resized[1], resized[3])
+
+    def test_default_auto_height_runs_in_a_real_pty(self) -> None:
+        automatic = self.run_pty_case(b"original", "auto_default")
+
+        self.assertEqual(automatic[0], 0)
+        self.assertEqual(automatic[2], b"original")
+        self.assert_rendering_contract(automatic[1], automatic[3])
 
     def test_editor_breaks_the_line_when_invoked_mid_row(self) -> None:
         """Reproduces git's GIT_EDITOR hint, which ends without a newline."""
