@@ -477,6 +477,8 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertEqual(path.read_text(encoding="utf-8"), "xy")
         self.assertFalse(editor.state.help_visible)
         self.assertIn("Ctrl-Y", editor.help_area.buffer.text)
+        self.assertIn("Ctrl-R", editor.help_area.buffer.text)
+        self.assertIn("F3", editor.help_area.buffer.text)
         self.assertIn("Alt-Q", editor.help_area.buffer.text)
         self.assertNotIn("Normal-mode editing", editor.help_area.buffer.text)
         self.assertTrue(editor.help_area.buffer.read_only())
@@ -495,6 +497,8 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIn("Ex commands (Normal mode)", help_text)
         self.assertIn(":wq", help_text)
         self.assertIn(":external", help_text)
+        self.assertIn("/ / ?", help_text)
+        self.assertIn("n / N", help_text)
         for unavailable in (
             "Ctrl-Space",
             "Ctrl-Y",
@@ -570,6 +574,127 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), " betaalpha")
         self.assertEqual(editor.application.clipboard.get_data().text, "alpha")
+
+    def test_ctrl_w_searches_forward_when_no_selection_exists(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one two one", encoding="utf-8")
+
+        result, editor = self.run_editor(path, "\x17two\rX\x13\x18")
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one Xtwo one")
+        self.assertEqual(editor.text_area.control.search_state.text, "two")
+
+    def test_ctrl_w_continues_an_active_forward_search(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one one one", encoding="utf-8")
+
+        result, _editor = self.run_editor(
+            path, "\x17one\x17\rX\x13\x18"
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one Xone one")
+
+    def test_ctrl_r_searches_backward(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one two one", encoding="utf-8")
+
+        result, _editor = self.run_editor(
+            path, "\x05\x12one\rX\x13\x18"
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one two Xone")
+
+    def test_ctrl_r_continues_an_active_reverse_search(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one one one", encoding="utf-8")
+
+        result, _editor = self.run_editor(
+            path, "\x05\x12one\x12\rX\x13\x18"
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one Xone one")
+
+    def test_search_up_and_down_move_between_matches(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one one one", encoding="utf-8")
+
+        result, _editor = self.run_editor(
+            path, "\x17one\x1b[B\x1b[A\rX\x13\x18"
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "Xone one one")
+
+    def test_ctrl_g_aborts_search_without_opening_help(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one two", encoding="utf-8")
+
+        result, editor = self.run_editor(
+            path, "\x17two\x07X\x13\x18"
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "Xone two")
+        self.assertFalse(editor.state.help_visible)
+
+    def test_ctrl_c_aborts_search_without_exiting(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one two", encoding="utf-8")
+
+        result, _editor = self.run_editor(
+            path, "\x17two\x03X\x13\x18"
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "Xone two")
+
+    def test_f3_repeats_the_last_accepted_search(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one one one", encoding="utf-8")
+
+        result, _editor = self.run_editor(
+            path, "\x17one\r\x1bORX\x13\x18"
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one Xone one")
+
+    def test_vi_slash_search_and_n_repeat(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one one one", encoding="utf-8")
+
+        result, _editor = self.run_editor(
+            path, "/one\rniX\x1b:wq\r", vi=True
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one Xone one")
+
+    def test_vi_question_mark_searches_backward(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one two one", encoding="utf-8")
+
+        result, _editor = self.run_editor(
+            path, "G?one\riX\x1b:wq\r", vi=True
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one two Xone")
+
+    def test_vi_uppercase_n_reverses_the_search(self) -> None:
+        path = self.directory / "search.txt"
+        path.write_text("one one one", encoding="utf-8")
+
+        result, _editor = self.run_editor(
+            path, "/one\rnNiX\x1b:wq\r", vi=True
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "Xone one one")
 
     def test_alt_w_copies_a_region_and_ctrl_y_yanks_it(self) -> None:
         path = self.directory / "region.txt"
@@ -834,6 +959,10 @@ class PtyIntegrationTests(unittest.TestCase):
                     read_until(b"inedit help")
                     read_until(b"Close this help")
                     os.write(master, b"\x07\x13\x18")
+                elif action == "search":
+                    os.write(master, b"\x17")
+                    read_until(b"I-search:")
+                    os.write(master, b"two\rX\x13\x18")
                 elif action == "exit_prompt":
                     os.write(master, b"x\x18")
                     read_until(b"Save modified buffer?")
@@ -920,6 +1049,16 @@ class PtyIntegrationTests(unittest.TestCase):
         self.assertIn(b"inedit help", helped[1])
         self.assertIn(b"Close this help", helped[1])
         self.assert_rendering_contract(helped[1], helped[3])
+
+    def test_search_prompt_renders_inline_and_accepts_a_match(self) -> None:
+        searched = self.run_pty_case(b"one two", "search")
+
+        self.assertEqual(searched[0], 0)
+        self.assertEqual(searched[2], b"one Xtwo")
+        self.assertTrue(
+            self.terminal_updates_contain(searched[1], b"I-search:")
+        )
+        self.assert_rendering_contract(searched[1], searched[3])
 
     def test_ctrl_x_prompt_renders_inline_and_can_be_canceled(self) -> None:
         prompted = self.run_pty_case(b"original", "exit_prompt")

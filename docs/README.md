@@ -41,6 +41,8 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 | `Ctrl-Z`, `Ctrl-_` | Undo |
 | `Alt-E` | Redo |
 | `Ctrl-Y` | Paste/yank the latest internal clipboard value |
+| `Ctrl-W` without a selection | Search forward |
+| `Ctrl-R` | Search backward |
 | `Left`, `Right` | Move by character, crossing logical-line boundaries |
 | `Up`, `Down` | Move by logical line |
 | `Home`, `End` | Move to the start or end of the logical line |
@@ -72,7 +74,7 @@ clipboard.
 | `Shift` + movement | Start or extend a selection when supported by the terminal |
 | `Ctrl-G` | Open help without changing the buffer, cursor, or selection |
 | `Ctrl-W` with a selection | Cut the selected text into the internal clipboard |
-| `Ctrl-W` without a selection | Kill the whitespace-delimited word before the cursor |
+| `Ctrl-W` without a selection | Start a forward search instead of cutting |
 | `Alt-W` with a selection | Copy the selection into the internal clipboard |
 | `Ctrl-K` | Kill from the cursor to the end of the line; at end of line, kill the newline |
 | `Ctrl-U` | Kill from the cursor back to the beginning of the line |
@@ -86,6 +88,30 @@ Your terminal's own paste command—often `Ctrl-Shift-V`, `Shift-Insert`, or a
 middle-click—can still send system-clipboard text as terminal input. That
 shortcut belongs to the terminal emulator, not to `inedit`, and varies by
 environment. Text killed inside `inedit` is not copied to the system clipboard.
+
+## Search
+
+Search uses prompt-toolkit's incremental search and temporarily replaces the
+one-row status line with a search prompt. The editor remains the same fixed
+height. Matching wraps at the beginning or end of the buffer.
+
+In default Emacs mode:
+
+| Key | Action |
+|---|---|
+| `Ctrl-W` without a selection | Start a forward search |
+| `Ctrl-W` while searching | Continue forward to the next match |
+| `Ctrl-R` | Start or continue a reverse search |
+| `Up`, `Down` while searching | Search backward or forward for another match |
+| `Enter`, `Escape` | Accept the current match and close the search prompt |
+| `Ctrl-C`, `Ctrl-G` | Cancel the search and restore the original cursor position |
+| `F3` | Repeat the last accepted search in its original direction |
+
+`Ctrl-W` remains Cut when a selection exists. `Ctrl-S` remains Save when no
+search is active; once the search prompt is open, prompt-toolkit treats it as
+another forward-search continuation key. A distinct `Shift-F3` binding is not
+provided because prompt-toolkit and common terminal protocols do not expose it
+portably.
 
 ## Keymap direction
 
@@ -132,6 +158,12 @@ Use normal vi commands such as `i` or `a` to begin inserting text; `Escape`
 returns to Normal mode. `Ctrl-S` keeps its global save meaning, while `Ctrl-X`
 and `Ctrl-C` remain equivalent global exit commands.
 
+Search in Normal mode follows vi: `/` searches forward, `?` searches
+backward, `n` repeats the accepted search, and `N` repeats it in the opposite
+direction. While entering a search, `Enter` or `Escape` accepts the current
+match and `Ctrl-C` or `Ctrl-G` cancels it. These are prompt-toolkit's native vi
+search bindings.
+
 Normal mode also has a deliberately small Ex command line:
 
 | Command | Action |
@@ -173,5 +205,5 @@ save/discard prompt instead of vi-style `:q` behavior.
 ## Current limitations
 
 - No direct system-clipboard integration.
-- No search and replace, syntax highlighting, mouse selection, multiple files,
-  or crash-recovery file.
+- No search-and-replace command, syntax highlighting, mouse selection,
+  multiple files, or crash-recovery file.

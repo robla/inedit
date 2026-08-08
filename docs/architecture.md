@@ -264,16 +264,18 @@ newline, undo, and clipboard edge cases.
 
 - `Ctrl-G` help;
 - equivalent `Ctrl-X`/Ctrl-C prompted exit and `Ctrl-S` save-without-exit;
+- conditional `Ctrl-W` forward-search entry when no selection exists;
 - Left/Right traversal across logical-line boundaries;
 - `Ctrl-Z` undo and `Alt-E` redo; and
 - the `inedit` save and safe-exit operations that protect the file lifecycle.
 
 Configure prompt-toolkit's `InMemoryClipboard` with `max_size=1`. Its native
-`Ctrl-Space`, `Ctrl-W`, `Alt-W`, `Ctrl-K`, `Ctrl-U`, and `Ctrl-Y` handlers then
-provide selection and clipboard operations with a single latest value rather
-than a kill-ring history. Do not advertise `Alt-Y` yank-pop. Keep internal
-yank and external system-clipboard paste as separate operations even if a
-later integration lets a cut populate both.
+`Ctrl-Space`, `Alt-W`, `Ctrl-K`, `Ctrl-U`, and `Ctrl-Y` handlers provide
+selection and clipboard operations with a single latest value rather than a
+kill-ring history. Its native `Ctrl-W` still cuts when a selection exists. Do
+not advertise `Alt-Y` yank-pop. Keep internal yank and external
+system-clipboard paste as separate operations even if a later integration
+lets a cut populate both.
 
 Keep the explicit binding surface small. Test the prompt-toolkit commands on
 which the public guide relies, but avoid wrapping or copying their handlers.
@@ -303,6 +305,33 @@ Unknown commands return to Normal mode and show a concise error. Do not parse
 filenames, bang variants, options, command separators, or the broader Ex
 language. Plain `:` remains insertable text in default Emacs mode.
 
+### Incremental search
+
+Attach one prompt-toolkit `SearchToolbar` to the editing `TextArea` through
+its `search_field` parameter. Keep that toolbar permanently in the layout tree
+so prompt-toolkit can focus its `SearchBufferControl`; its own conditional
+container gives it zero height when inactive. Put the Ex command area and
+ordinary status window in complementary conditional containers. Exactly one
+of the search toolbar, Ex prompt, or status window then occupies the footer
+row at a time.
+
+Prompt-toolkit owns query state, incremental cursor movement, acceptance,
+cancellation, and vi repetition. In default Emacs mode, override `Ctrl-W`
+only under these two conditions: with no selection and no active search, call
+prompt-toolkit's forward-search entry binding; during a search, call its
+forward-repeat binding. When a selection exists, allow the native region-cut
+binding to win. Retain prompt-toolkit's native `Ctrl-R`, Up/Down, Enter,
+Escape, `Ctrl-C`, and `Ctrl-G` search behavior. Application-level save, help,
+and exit bindings must be filtered out while search has focus so they cannot
+steal those search keystrokes. Outside search, `Ctrl-S` remains Save.
+
+In vi mode, rely on prompt-toolkit's native `/` and `?` entry, `n`/`N`
+repetition, and search-prompt controls. Do not reproduce vi's search state in
+`inedit`. The accepted query already remains on the editing `BufferControl`;
+default mode's `F3` binding applies that retained `SearchState` again in its
+original direction. Do not advertise `Shift-F3`: prompt-toolkit 3.0.36 and
+common terminal input protocols do not provide a portable shifted-F3 key.
+
 ## Status line
 
 Generate status fragments on demand from the requested filename, the current
@@ -322,8 +351,10 @@ Place a save error or discard reminder before that stable suffix. Calculate
 width in terminal cells with prompt_toolkit's Unicode-width helpers. When the
 row is too narrow, left-truncate the filename first with an ellipsis, then the
 transient message. Preserve cursor position and key hints as long as the
-terminal width permits. The status `Window` must remain one row and must not
-wrap.
+terminal width permits. The status `Window`, search toolbar, and Ex command
+line must each remain one row and must not wrap. Their conditional containers
+must be mutually exclusive without removing the search control from the
+layout tree.
 
 ## Save transaction
 

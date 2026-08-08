@@ -56,8 +56,9 @@ Current and tentative direction:
 
 - keep the implemented Nano/Pico-style `Ctrl-X` exit prompt;
 - keep the implemented `Ctrl-G` inline help view;
-- inherit `Ctrl-Space`, `Ctrl-W`, `Alt-W`, `Ctrl-K`, `Ctrl-U`, and `Ctrl-Y`
-  directly from prompt-toolkit;
+- inherit `Ctrl-Space`, `Alt-W`, `Ctrl-K`, `Ctrl-U`, and `Ctrl-Y` directly
+  from prompt-toolkit, while making `Ctrl-W` start search only when no
+  selection exists;
 - keep the internal clipboard at one entry and do not advertise yank-pop;
 - retain `Ctrl-Z` as an undo convenience and `Alt-E` as redo for now;
 - keep `Ctrl-S` as save-without-exit;
@@ -95,7 +96,8 @@ or validate its content from the intentional binding registry.
 The one-row status line includes `^G Help`, `^S Save`, and `^X/^C Exit`, with
 `^G Help` changing to `^G Close` while help is visible. The full key list
 belongs in help; the status line should favor help, save, exit, and the active
-transient prompt.
+transient prompt. An active incremental search or vi Ex command temporarily
+uses this same footer row, so neither feature changes the editor's height.
 
 ## Goals
 
@@ -179,7 +181,10 @@ current keys include:
 | `Ctrl-Z`, `Ctrl-_` | Undo |
 | `Alt-E` | Redo |
 | `Ctrl-Space` | Start a selection (prompt-toolkit) |
-| `Ctrl-W`, `Alt-W` | Cut/copy a selected region (prompt-toolkit) |
+| `Ctrl-W` | Cut a selected region; without a selection, search forward |
+| `Ctrl-R` | Search backward |
+| `F3` | Repeat the last accepted search |
+| `Alt-W` | Copy a selected region (prompt-toolkit) |
 | `Ctrl-K` | Kill to the end of the line (prompt-toolkit) |
 | `Ctrl-U` | Kill to the beginning of the line (prompt-toolkit) |
 | `Ctrl-Y` | Paste/yank the latest clipboard value (prompt-toolkit) |
@@ -195,7 +200,8 @@ starts in Normal mode, and the status line shows `[NORMAL]`, `[INSERT]`,
 `Ctrl-X`, and `Ctrl-C` retain their global meanings. A limited Ex command line
 implements `:w`, `:q`, `:wq`, `:h`, and the inedit-specific `:external`
 (plus the applicable long forms). It does not accept filenames, `!` variants,
-options, or arbitrary Ex commands.
+options, or arbitrary Ex commands. Native vi `/` and `?` searches and `n`/`N`
+repetition are available in Normal mode.
 
 On the main screen, `Ctrl-C` follows the same clean-or-prompted exit path as
 `Ctrl-X`. Within the prompt, `Ctrl-C` returns to editing.
@@ -336,7 +342,7 @@ spaces and long paths requiring horizontal scrolling.
 ## Continuing non-goals
 
 - Multiple files, tabs, split views, syntax highlighting, or plugins.
-- Search and replace, macros, or Ex commands beyond the small
+- Search-and-replace, macros, or Ex commands beyond the small
   `:w`/`:q`/`:wq`/`:h`/`:external` set.
 - Mouse selection. System-clipboard integration is now a near-term roadmap
   item, but must remain optional and terminal-safe.

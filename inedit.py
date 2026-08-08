@@ -26,16 +26,28 @@ from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.buffer import reshape_text
 from prompt_toolkit.clipboard import InMemoryClipboard
 from prompt_toolkit.enums import EditingMode
-from prompt_toolkit.filters import Condition, vi_insert_mode
+from prompt_toolkit.filters import (
+    Condition,
+    has_selection,
+    is_searching,
+    vi_insert_mode,
+)
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding.bindings import search as search_bindings
 from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import (
+    ConditionalContainer,
+    DynamicContainer,
+    HSplit,
+    Layout,
+    Window,
+)
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
-from prompt_toolkit.widgets import TextArea
+from prompt_toolkit.widgets import SearchToolbar, TextArea
 
 DEFAULT_HEIGHT = 20
 MINIMUM_HEIGHT = 4
@@ -51,11 +63,19 @@ File
 
 Clipboard and selection
   Ctrl-Space    Set the mark / start a selection
-  Ctrl-W        Cut the region, or kill the previous word
+  Ctrl-W        Cut the region; without one, search forward
   Alt-W         Copy the selected region
   Ctrl-K        Kill from the cursor to the end of the line
   Ctrl-U        Kill from the cursor to the start of the line
   Ctrl-Y        Paste/yank the latest cut or copy
+
+Search
+  Ctrl-W        Start or continue a forward search
+  Ctrl-R        Start or continue a reverse search
+  Up / Down     Search backward / forward for another match
+  Enter / Esc   Accept the current match
+  Ctrl-C/G      Cancel the search
+  F3            Repeat the accepted search
 
 Undo and redo
   Ctrl-Z        Undo
@@ -109,6 +129,12 @@ Normal-mode movement
   f/F + char    Find next / previous character on this line
   ; / ,         Repeat / reverse the last character find
   PageUp/Down   Move by a viewport
+
+Search (Normal mode)
+  / / ?         Search forward / backward
+  n / N         Repeat / reverse the accepted search
+  Enter / Esc   Accept the current match
+  Ctrl-C/G      Cancel the search
 
 Normal-mode editing
   x / X         Delete character under / before cursor
@@ -238,6 +264,7 @@ class BuiltEditor:
     text_area: TextArea
     help_area: TextArea
     command_area: TextArea
+    search_toolbar: SearchToolbar
 
 
 class TerminationRequested(BaseException):
@@ -706,6 +733,7 @@ def build_application(
         original_text=document.text,
         effective_height=initial_height or options.height,
     )
+    search_toolbar = SearchToolbar(vi_mode=options.vi)
     text_area = TextArea(
         text=document.text,
         multiline=True,
@@ -714,6 +742,7 @@ def build_application(
         scrollbar=True,
         line_numbers=options.line_numbers,
         height=lambda: state.effective_height - 1,
+        search_field=search_toolbar,
     )
     current_document = document
     help_area = TextArea(
@@ -780,7 +809,7 @@ def build_application(
         event.app.invalidate()
         return True
 
-    @bindings.add("c-s", eager=True)
+    @bindings.add("c-s", filter=~is_searching, eager=True)
     def save(event: Any) -> None:
         if state.ex_command_visible:
             leave_ex_command(event.app)
@@ -800,14 +829,19 @@ def build_application(
         else:
             event.app.exit(result=EditorResult(ExitReason.SAVED))
 
-    @bindings.add("c-x", eager=True, save_before=lambda _event: False)
+    @bindings.add(
+        "c-x",
+        filter=~is_searching,
+        eager=True,
+        save_before=lambda _event: False,
+    )
     def exit_editor(event: Any) -> None:
         if not state.exit_prompt:
             request_exit(event)
 
     @bindings.add(
         "c-c",
-        filter=~ex_command_mode,
+        filter=~ex_command_mode & ~is_searching,
         eager=True,
         save_before=lambda _event: False,
     )
@@ -837,6 +871,7 @@ def build_application(
 
     @bindings.add(
         "c-g",
+        filter=~is_searching,
         eager=True,
         save_before=lambda _event: False,
     )
@@ -874,6 +909,44 @@ def build_application(
         and not state.help_visible
         and not state.exit_prompt
     )
+
+    @bindings.add(
+        "c-w",
+        filter=emacs_mode & ~has_selection & ~is_searching,
+        eager=True,
+    )
+    def start_forward_search(event: Any) -> None:
+        search_bindings.start_forward_incremental_search.call(event)
+
+    @bindings.add(
+        "c-w",
+        filter=emacs_mode & is_searching,
+        eager=True,
+    )
+    def continue_forward_search(event: Any) -> None:
+        search_bindings.forward_incremental_search.call(event)
+
+    repeatable_search = Condition(
+        lambda: not options.vi
+        and not state.help_visible
+        and not state.exit_prompt
+        and not state.ex_command_visible
+        and not is_searching()
+        and bool(text_area.control.search_state.text)
+        and bool(application_reference)
+        and application_reference[0].layout.current_buffer
+        is text_area.buffer
+    )
+
+    @bindings.add("f3", filter=repeatable_search, eager=True)
+    def repeat_search(event: Any) -> None:
+        text_area.buffer.apply_search(
+            text_area.control.search_state,
+            include_current_position=False,
+            count=event.arg,
+        )
+        event.app.invalidate()
+
     arrow_mode = emacs_mode | vi_insert_mode
     vi_normal_editor = Condition(
         lambda: options.vi
@@ -1083,10 +1156,14 @@ def build_application(
             DynamicContainer(
                 lambda: help_area if state.help_visible else text_area
             ),
-            DynamicContainer(
-                lambda: command_area
-                if state.ex_command_visible
-                else status_window
+            search_toolbar,
+            ConditionalContainer(
+                command_area,
+                filter=ex_command_mode & ~is_searching,
+            ),
+            ConditionalContainer(
+                status_window,
+                filter=~ex_command_mode & ~is_searching,
             ),
         ],
         height=lambda: state.effective_height,
@@ -1111,7 +1188,14 @@ def build_application(
 
     application: Application[EditorResult] = Application(
         layout=layout,
-        style=Style.from_dict({"status": "reverse"}),
+        style=Style.from_dict(
+            {
+                "status": "reverse",
+                "search-toolbar": "reverse",
+                "search-toolbar.prompt": "reverse",
+                "search-toolbar.text": "reverse",
+            }
+        ),
         key_bindings=bindings,
         clipboard=InMemoryClipboard(max_size=1),
         editing_mode=EditingMode.VI if options.vi else EditingMode.EMACS,
@@ -1127,7 +1211,14 @@ def build_application(
 
     initialize_vi_mode(application)
     application_reference.append(application)
-    return BuiltEditor(application, state, text_area, help_area, command_area)
+    return BuiltEditor(
+        application,
+        state,
+        text_area,
+        help_area,
+        command_area,
+        search_toolbar,
+    )
 
 
 def _signal_name(signum: int) -> str:
