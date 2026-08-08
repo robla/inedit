@@ -30,3 +30,5 @@ Conventions:
 ** Claude [2026-07-20 Mon 23:43 PDT]: Added Emacs-style =Alt-Q= fill-paragraph, reusing prompt-toolkit's existing paragraph-boundary detection and =gq= reflow logic instead of writing a new word-wrap algorithm.
 ** Claude [2026-07-21 Tue 00:23 PDT]: Added =Alt-V= escape hatch to hand the buffer off to =$VISUAL=/=$EDITOR= (falling back to vi), using prompt-toolkit's =run_in_terminal= to suspend the inline UI; nonzero exit discards the edit, matching vi's =:cq= convention. Verified live against real =vi=.
 ** Codex [2026-08-07 Fri 17:56 PDT]: Made Left and Right traverse newline boundaries in Emacs mode and vi insert mode, with focused movement tests and updated key documentation.
+** Codex [2026-08-07 Fri 18:22 PDT]: Made =--vi= start in Normal mode and added live =[NORMAL]=, =[INSERT]=, =[REPLACE]=, and =[VISUAL]= status labels with PTY coverage.
+** Codex [2026-08-07 Fri 18:38 PDT]: Added mode-specific =Ctrl-G= help, with a vi reference for supported modes, motions, operators, selections, and editing commands that omits Emacs-only shortcuts.

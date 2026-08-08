@@ -83,10 +83,12 @@ into the file.
 
 The `Ctrl-G` help view is implemented. It fits the inline rendering model,
 shows the current keys, scrolls within the bounded editor body, and returns to
-the same buffer, cursor, and selection without modifying the file. Future work
-should generate or validate its content from the intentional binding registry
-and tailor the text when `--vi` is active. [README.md](README.md) remains the
-authoritative user key reference.
+the same buffer, cursor, and selection without modifying the file. Its content
+is mode-specific: default mode shows the Emacs-oriented bindings, while
+`--vi` shows supported vi modes, motions, operators, selections, and editing
+commands without advertising Emacs-only shortcuts. Future work should generate
+or validate its content from the intentional binding registry.
+[README.md](README.md) remains the authoritative user key reference.
 
 ### 4. Reconcile the status line with the keymap
 
@@ -116,7 +118,8 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 - `FILE` is required. One file is supported.
 - `--height ROWS` sets the total rendered height, including the status line.
   The default is `${INEDIT_HEIGHT:-20}`.
-- `--vi` selects prompt_toolkit's vi editing mode. Emacs mode is the default.
+- `--vi` selects prompt_toolkit's vi editing mode, starting in Normal mode.
+  Emacs mode is the default.
 - `--no-line-numbers` hides the line-number gutter. Numbers are shown by
   default because callers such as `dsedit` report validation errors by line.
 - `--` permits a filename beginning with `-`.
@@ -186,9 +189,11 @@ current keys include:
 
 See [README.md](README.md) for the complete current key reference.
 
-In `--vi` mode, prompt_toolkit owns vi insert/normal navigation and `Escape`
-returns to normal mode. `Ctrl-S`, `Ctrl-X`, and `Ctrl-C` retain their global
-meanings. Version 1 does not implement Ex commands such as `:wq`.
+In `--vi` mode, prompt_toolkit owns vi insert/normal navigation, the editor
+starts in Normal mode, and the status line shows `[NORMAL]`, `[INSERT]`,
+`[REPLACE]`, or `[VISUAL]`. `Escape` returns to Normal mode. `Ctrl-S`,
+`Ctrl-X`, and `Ctrl-C` retain their global meanings. Version 1 does not
+implement Ex commands such as `:wq`.
 
 On the main screen, `Ctrl-C` follows the same clean-or-prompted exit path as
 `Ctrl-X`. Within the prompt, `Ctrl-C` returns to editing.

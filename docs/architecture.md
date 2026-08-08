@@ -178,6 +178,7 @@ Application(
     layout=layout,
     key_bindings=bindings,
     editing_mode=EditingMode.VI if options.vi else EditingMode.EMACS,
+    on_reset=initialize_vi_mode,
     enable_page_navigation_bindings=True,
     full_screen=False,
     erase_when_done=True,
@@ -186,7 +187,9 @@ Application(
 ```
 
 `full_screen=False` and `erase_when_done=True` are invariants, not configuration
-choices. A later refactor should have a test that fails if either changes.
+choices. A later refactor should have a test that fails if either changes. In
+vi mode, the `on_reset` handler must select `InputMode.NAVIGATION` because
+prompt-toolkit otherwise resets every application run to Insert mode.
 
 ### Resize behavior
 
@@ -277,6 +280,12 @@ which the public guide relies, but avoid wrapping or copying their handlers.
 Generate or validate status-line and `Ctrl-G` help entries from a small
 intentional-binding registry if documentation drift becomes a problem.
 
+Build the read-only help area from one of two static references. Default mode
+documents the Emacs-oriented bindings, including the custom formatting and
+external-editor commands. Vi mode instead documents prompt-toolkit's supported
+mode changes, motions, operators, Visual selections, and Insert-mode keys. It
+must omit Emacs-only commands and state that Ex commands are unavailable.
+
 ## Status line
 
 Generate status fragments on demand from the requested filename, the current
@@ -286,6 +295,11 @@ logical line and column numbers. The stable right side is:
 ```text
 Ln N, Col N | modified/unchanged | ^G Help | ^S Save | ^X/^C Exit
 ```
+
+In vi mode, insert `[NORMAL]`, `[INSERT]`, `[REPLACE]`, or `[VISUAL]` after
+the modified state. Derive it on every status render from prompt-toolkit's
+current vi and selection state so transitions appear immediately. The mode
+label is part of the stable suffix and is omitted in Emacs mode.
 
 Place a save error or discard reminder before that stable suffix. Calculate
 width in terminal cells with prompt_toolkit's Unicode-width helpers. When the

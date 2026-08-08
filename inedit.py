@@ -29,6 +29,7 @@ from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import Condition, vi_insert_mode
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import DynamicContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -40,7 +41,7 @@ DEFAULT_HEIGHT = 20
 MINIMUM_HEIGHT = 4
 SIGNAL_DISCARD_MESSAGE = "Unsaved changes; interrupt again to discard"
 EXIT_PROMPT = "Save modified buffer? Y Yes | N No | ^C Cancel"
-HELP_TEXT = """inedit help
+EMACS_HELP_TEXT = """inedit help (Emacs mode)
 
 File
   Ctrl-X        Exit; prompt to save when modified
@@ -80,6 +81,63 @@ Movement
 The internal clipboard retains only the latest cut or copy. Terminal paste
 (often Ctrl-Shift-V or Shift-Insert) continues to insert system clipboard
 text as terminal input.
+"""
+
+VI_HELP_TEXT = """inedit help (vi mode)
+
+File (all modes)
+  Ctrl-X        Exit; prompt to save when modified
+  Ctrl-S        Save and continue editing
+  Ctrl-C        Same as Ctrl-X; cancel an active exit prompt
+  Ctrl-G        Close this help
+
+Modes
+  Esc           Return to Normal mode
+  i / a         Insert before / after the cursor
+  I / A         Insert at first nonblank / end of line
+  o / O         Open a line below / above
+  R             Enter Replace mode
+  v / V         Visual character / line selection
+  Ctrl-V        Visual block selection
+
+Normal-mode movement
+  h j k l       Left, down, up, right
+  Arrow keys    Move the cursor
+  w / b / e     Next word, previous word, end of word
+  0 / ^ / $     Start, first nonblank, end of line
+  gg / G        First / last line
+  f/F + char    Find next / previous character on this line
+  ; / ,         Repeat / reverse the last character find
+  PageUp/Down   Move by a viewport
+
+Normal-mode editing
+  x / X         Delete character under / before cursor
+  dd / D        Delete line / through end of line
+  cc / C        Change line / through end of line
+  yy / Y        Yank (copy) line
+  d/c/y + move  Delete, change, or yank using a motion
+  p / P         Paste after / before cursor
+  r + char / R  Replace one character / enter Replace mode
+  u             Undo
+  J             Join the next line
+  >> / <<       Indent / unindent line
+
+Visual mode
+  Movement      Extend the selection
+  d or x        Cut the selection
+  y             Yank (copy) the selection
+  Esc           Return to Normal mode
+
+Insert and Replace modes
+  Enter         Insert a newline
+  Arrow keys    Move the cursor
+  Backspace     Delete before the cursor
+  Delete        Delete under the cursor
+  Esc           Return to Normal mode
+
+Counts work with Normal-mode commands and operators. Yanks and deletions use
+the one-entry internal clipboard, not the system clipboard. There is no Ex
+command line: use Ctrl-S to save and Ctrl-X or Ctrl-C to exit.
 """
 
 
@@ -212,7 +270,7 @@ def parse_args(
     parser.add_argument(
         "--vi",
         action="store_true",
-        help="use vi editing mode instead of Emacs mode",
+        help="use vi editing mode, starting in Normal mode",
     )
     parser.add_argument(
         "--no-line-numbers",
@@ -561,12 +619,30 @@ def _one_line(text: str) -> str:
     return " ".join(text.splitlines())
 
 
+def vi_mode_label(
+    input_mode: InputMode,
+    *,
+    has_selection: bool = False,
+    temporary_navigation: bool = False,
+) -> str:
+    """Return the compact status label for prompt-toolkit's vi state."""
+
+    if has_selection:
+        return "VISUAL"
+    if temporary_navigation or input_mode is InputMode.NAVIGATION:
+        return "NORMAL"
+    if input_mode in (InputMode.REPLACE, InputMode.REPLACE_SINGLE):
+        return "REPLACE"
+    return "INSERT"
+
+
 def format_status(
     state: EditorState,
     current_text: str,
     cursor_row: int,
     cursor_column: int,
     columns: int,
+    vi_mode: str | None = None,
 ) -> str:
     """Format a single status row, truncating the filename first."""
 
@@ -576,10 +652,11 @@ def format_status(
     if state.exit_prompt:
         return _truncate_right(EXIT_PROMPT, columns)
     help_action = "^G Close" if state.help_visible else "^G Help"
-    suffix = (
-        f"Ln {cursor_row + 1}, Col {cursor_column + 1} | {modified} | "
-        f"{help_action} | ^S Save | ^X/^C Exit"
-    )
+    suffix_parts = [f"Ln {cursor_row + 1}, Col {cursor_column + 1}", modified]
+    if vi_mode is not None:
+        suffix_parts.append(f"[{vi_mode}]")
+    suffix_parts.extend((help_action, "^S Save", "^X/^C Exit"))
+    suffix = " | ".join(suffix_parts)
     separator = " | "
 
     if _display_width(suffix) >= columns:
@@ -629,7 +706,7 @@ def build_application(
     )
     current_document = document
     help_area = TextArea(
-        text=HELP_TEXT,
+        text=VI_HELP_TEXT if options.vi else EMACS_HELP_TEXT,
         multiline=True,
         read_only=True,
         wrap_lines=False,
@@ -868,14 +945,25 @@ def build_application(
     def status_fragments() -> FormattedText:
         buffer_document = text_area.buffer.document
         columns = 80
+        mode = None
         if application_reference:
-            columns = application_reference[0].output.get_size().columns
+            running_application = application_reference[0]
+            columns = running_application.output.get_size().columns
+            if options.vi:
+                mode = vi_mode_label(
+                    running_application.vi_state.input_mode,
+                    has_selection=text_area.buffer.selection_state is not None,
+                    temporary_navigation=(
+                        running_application.vi_state.temporary_navigation_mode
+                    ),
+                )
         status = format_status(
             state,
             text_area.buffer.text,
             buffer_document.cursor_position_row,
             buffer_document.cursor_position_col,
             columns,
+            mode,
         )
         return FormattedText([("class:status", status)])
 
@@ -909,6 +997,10 @@ def build_application(
         if new_height != state.effective_height:
             state.effective_height = new_height
 
+    def initialize_vi_mode(application: Application[EditorResult]) -> None:
+        if options.vi:
+            application.vi_state.input_mode = InputMode.NAVIGATION
+
     application: Application[EditorResult] = Application(
         layout=layout,
         style=Style.from_dict({"status": "reverse"}),
@@ -919,11 +1011,13 @@ def build_application(
         full_screen=False,
         erase_when_done=True,
         terminal_size_polling_interval=0.5,
+        on_reset=initialize_vi_mode,
         before_render=before_render,
         input=input,
         output=output,
     )
 
+    initialize_vi_mode(application)
     application_reference.append(application)
     return BuiltEditor(application, state, text_area, help_area)
 

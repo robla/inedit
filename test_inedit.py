@@ -293,6 +293,15 @@ class LayoutAndStateTests(unittest.TestCase):
         help_status = inedit.format_status(state, "", 0, 0, 80)
         self.assertIn("^G Close", help_status)
 
+        vi_status = inedit.format_status(
+            state, "", 0, 0, 80, vi_mode="NORMAL"
+        )
+        self.assertIn("| [NORMAL] |", vi_status)
+        insert_status = inedit.format_status(
+            state, "", 0, 0, 80, vi_mode="INSERT"
+        )
+        self.assertIn("| [INSERT] |", insert_status)
+
         state.exit_prompt = True
         prompt_status = inedit.format_status(state, "changed", 0, 0, 80)
         self.assertEqual(prompt_status, inedit.EXIT_PROMPT)
@@ -357,10 +366,55 @@ class LayoutAndStateTests(unittest.TestCase):
         path = self.directory / "lines.txt"
         path.write_text("one\ntwo", encoding="utf-8")
         result, _editor = self.run_editor(
-            path, "\x1b[F\x1b[Cx\x13\x18", vi=True
+            path, "i\x1b[F\x1b[Cx\x13\x18", vi=True
         )
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "one\nxtwo")
+
+    def test_vi_mode_starts_in_normal_mode(self) -> None:
+        path = self.directory / "lines.txt"
+        document = inedit.load_document(path)
+        with create_pipe_input() as pipe:
+            editor = inedit.build_application(
+                document,
+                self.options(path, vi=True),
+                input=pipe,
+                output=DummyOutput(),
+            )
+            self.assertIs(
+                editor.application.vi_state.input_mode,
+                inedit.InputMode.NAVIGATION,
+            )
+            pipe.send_text("\x18")
+            result = editor.application.run(set_exception_handler=False)
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertIs(
+            editor.application.vi_state.input_mode,
+            inedit.InputMode.NAVIGATION,
+        )
+
+    def test_vi_mode_labels_cover_prompt_toolkit_states(self) -> None:
+        self.assertEqual(
+            inedit.vi_mode_label(inedit.InputMode.NAVIGATION), "NORMAL"
+        )
+        self.assertEqual(
+            inedit.vi_mode_label(inedit.InputMode.INSERT_MULTIPLE), "INSERT"
+        )
+        self.assertEqual(
+            inedit.vi_mode_label(inedit.InputMode.REPLACE_SINGLE), "REPLACE"
+        )
+        self.assertEqual(
+            inedit.vi_mode_label(
+                inedit.InputMode.NAVIGATION, has_selection=True
+            ),
+            "VISUAL",
+        )
+        self.assertEqual(
+            inedit.vi_mode_label(
+                inedit.InputMode.INSERT, temporary_navigation=True
+            ),
+            "NORMAL",
+        )
 
     def test_alt_q_fills_the_current_paragraph(self) -> None:
         path = self.directory / "paragraph.txt"
@@ -423,6 +477,31 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertEqual(path.read_text(encoding="utf-8"), "xy")
         self.assertFalse(editor.state.help_visible)
         self.assertIn("Ctrl-Y", editor.help_area.buffer.text)
+        self.assertIn("Alt-Q", editor.help_area.buffer.text)
+        self.assertNotIn("Normal-mode editing", editor.help_area.buffer.text)
+        self.assertTrue(editor.help_area.buffer.read_only())
+
+    def test_vi_help_shows_vi_commands_without_emacs_only_commands(self) -> None:
+        path = self.directory / "new.txt"
+        result, editor = self.run_editor(path, "\x07\x07\x18", vi=True)
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertFalse(editor.state.help_visible)
+        help_text = editor.help_area.buffer.text
+        self.assertIn("inedit help (vi mode)", help_text)
+        self.assertIn("Normal-mode movement", help_text)
+        self.assertIn("d/c/y + move", help_text)
+        self.assertIn("v / V", help_text)
+        self.assertIn("There is no Ex", help_text)
+        for unavailable in (
+            "Ctrl-Space",
+            "Ctrl-Y",
+            "Ctrl-Z",
+            "Alt-E",
+            "Alt-Q",
+            "Alt-V",
+        ):
+            self.assertNotIn(unavailable, help_text)
         self.assertTrue(editor.help_area.buffer.read_only())
 
     def test_ctrl_w_cuts_a_region_and_ctrl_y_yanks_it(self) -> None:
@@ -645,14 +724,17 @@ class PtyIntegrationTests(unittest.TestCase):
             os.write(slave, sentinel)
             environment = dict(os.environ)
             environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            command = [
+                sys.executable,
+                str(Path(inedit.__file__).resolve()),
+                "--height",
+                "8",
+            ]
+            if action == "vi_modes":
+                command.append("--vi")
+            command.append(str(path))
             process = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(Path(inedit.__file__).resolve()),
-                    "--height",
-                    "8",
-                    str(path),
-                ],
+                command,
                 stdin=slave,
                 stdout=slave,
                 stderr=slave,
@@ -698,6 +780,11 @@ class PtyIntegrationTests(unittest.TestCase):
                     os.write(master, b"x\x18")
                     read_until(b"Save modified buffer?")
                     os.write(master, b"\x03\x13\x18")
+                elif action == "vi_modes":
+                    read_until(b"[NORMAL]")
+                    os.write(master, b"i")
+                    read_until(b"INSERT")
+                    os.write(master, b"\x18")
                 elif action == "sigint":
                     os.write(master, b"x")
                     read_until(b"| modifi")
@@ -782,6 +869,19 @@ class PtyIntegrationTests(unittest.TestCase):
             )
         )
         self.assert_rendering_contract(prompted[1], prompted[3])
+
+    def test_vi_mode_labels_normal_and_insert_in_a_real_pty(self) -> None:
+        vi_modes = self.run_pty_case(b"original", "vi_modes")
+
+        self.assertEqual(vi_modes[0], 0)
+        self.assertEqual(vi_modes[2], b"original")
+        self.assertTrue(
+            self.terminal_updates_contain(vi_modes[1], b"[NORMAL]")
+        )
+        self.assertTrue(
+            self.terminal_updates_contain(vi_modes[1], b"INSERT")
+        )
+        self.assert_rendering_contract(vi_modes[1], vi_modes[3])
 
     def test_editor_breaks_the_line_when_invoked_mid_row(self) -> None:
         """Reproduces git's GIT_EDITOR hint, which ends without a newline."""

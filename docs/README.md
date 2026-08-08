@@ -17,7 +17,8 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 
 - `--height ROWS` changes the total editor height. The default is
   `${INEDIT_HEIGHT:-20}`.
-- `--vi` selects prompt-toolkit's vi editing mode. Emacs mode is the default.
+- `--vi` selects prompt-toolkit's vi editing mode, starting in Normal mode.
+  Emacs mode is the default.
 - `--no-line-numbers` hides the line-number gutter.
 - `--` permits a filename beginning with `-`.
 
@@ -104,7 +105,10 @@ clipboard.
 Press `Ctrl-G` to replace the editing area with a scrollable key reference.
 Press `Ctrl-G` again to return to the same buffer, cursor, and selection. The
 status bar shows `^G Help` while editing and `^G Close` in the help view. Arrow
-keys and `PageUp`/`PageDown` navigate the help text.
+keys and `PageUp`/`PageDown` navigate the help text. The default help lists the
+Emacs-mode commands documented below. With `--vi`, it instead lists the
+supported vi modes, motions, operators, Visual selections, and Insert-mode
+keys; Emacs-only commands are omitted.
 
 ## Movement in default Emacs mode
 
@@ -122,8 +126,10 @@ Long lines scroll horizontally rather than wrapping.
 
 ## Vi mode
 
-With `--vi`, prompt-toolkit supplies vi insert and normal modes. `Escape`
-returns to normal mode. `Ctrl-S` keeps its global save meaning, while `Ctrl-X`
+With `--vi`, the editor starts in Normal mode. The status line displays
+`[NORMAL]`, `[INSERT]`, `[REPLACE]`, or `[VISUAL]` as the active mode changes.
+Use normal vi commands such as `i` or `a` to begin inserting text; `Escape`
+returns to Normal mode. `Ctrl-S` keeps its global save meaning, while `Ctrl-X`
 and `Ctrl-C` remain equivalent global exit commands. Version 1 has no Ex
 command line, so commands such as `:wq` are not available.
 
