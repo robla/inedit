@@ -219,6 +219,12 @@ class ExitReason(Enum):
     ERROR = "error"
 
 
+class FinalOutcome(Enum):
+    SAVED = "saved"
+    UNCHANGED = "unchanged"
+    DISCARDED = "discarded"
+
+
 @dataclass(frozen=True)
 class Fingerprint:
     device: int
@@ -248,10 +254,21 @@ class EditorOptions:
     line_numbers: bool
 
 
+@dataclass(frozen=True)
+class FinalSummary:
+    program_name: str
+    display_path: str
+    outcome: FinalOutcome
+    saved_during_session: bool
+    file_exists: bool | None
+    byte_count: int | None
+
+
 @dataclass
 class EditorState:
     document: Document
     original_text: str
+    program_name: str = "inedit.py"
     message: str | None = None
     discard_armed: bool = False
     help_visible: bool = False
@@ -260,6 +277,8 @@ class EditorState:
     auto_height: bool = False
     requested_height: int = AUTO_MINIMUM_TEXT_ROWS + 1
     effective_height: int = AUTO_MINIMUM_TEXT_ROWS + 1
+    saved_during_session: bool = False
+    final_summary: FinalSummary | None = None
 
     def is_modified(self, current_text: str) -> bool:
         return current_text != self.original_text
@@ -710,6 +729,89 @@ def _one_line(text: str) -> str:
     return " ".join(text.splitlines())
 
 
+def capture_final_summary(
+    state: EditorState,
+    current_text: str,
+) -> FinalSummary:
+    """Capture the controlled-exit facts shown in terminal history."""
+
+    if state.is_modified(current_text):
+        outcome = FinalOutcome.DISCARDED
+    elif state.saved_during_session:
+        outcome = FinalOutcome.SAVED
+    else:
+        outcome = FinalOutcome.UNCHANGED
+
+    try:
+        byte_count = state.document.requested_path.stat().st_size
+    except FileNotFoundError:
+        file_exists: bool | None = False
+        byte_count = None
+    except OSError:
+        file_exists = None
+        byte_count = None
+    else:
+        file_exists = True
+
+    return FinalSummary(
+        program_name=_one_line(state.program_name) or "inedit.py",
+        display_path=_one_line(state.document.display_path),
+        outcome=outcome,
+        saved_during_session=state.saved_during_session,
+        file_exists=file_exists,
+        byte_count=byte_count,
+    )
+
+
+def _byte_count_text(byte_count: int) -> str:
+    unit = "byte" if byte_count == 1 else "bytes"
+    return f"{byte_count} {unit}"
+
+
+def format_final_summary(summary: FinalSummary, columns: int) -> str:
+    """Format a plain final row, preserving the outcome before the path."""
+
+    label = f"{summary.program_name}: "
+    if summary.file_exists is True:
+        assert summary.byte_count is not None
+        size = _byte_count_text(summary.byte_count)
+        if summary.outcome is FinalOutcome.SAVED:
+            prefix = f"{label}saved {size} to "
+        elif summary.outcome is FinalOutcome.UNCHANGED:
+            prefix = f"{label}no changes; {size} on disk: "
+        elif summary.saved_during_session:
+            prefix = (
+                f"{label}unsaved edits discarded; "
+                f"previous save kept ({size}): "
+            )
+        else:
+            verb = "remains" if summary.byte_count == 1 else "remain"
+            prefix = (
+                f"{label}unsaved edits discarded; "
+                f"{size} {verb} on disk: "
+            )
+    elif summary.file_exists is False:
+        if summary.outcome is FinalOutcome.DISCARDED:
+            prefix = f"{label}unsaved edits discarded; no file created: "
+        elif summary.outcome is FinalOutcome.UNCHANGED:
+            prefix = f"{label}no changes; no file created: "
+        else:
+            prefix = f"{label}save completed; file is now missing: "
+    else:
+        if summary.outcome is FinalOutcome.SAVED:
+            action = "saved;"
+        elif summary.outcome is FinalOutcome.UNCHANGED:
+            action = "no changes;"
+        else:
+            action = "unsaved edits discarded;"
+        prefix = f"{label}{action} file size unavailable: "
+
+    path_width = columns - _display_width(prefix)
+    if path_width > 0:
+        return prefix + _truncate_left(summary.display_path, path_width)
+    return _truncate_right(prefix.rstrip(), columns)
+
+
 def vi_mode_label(
     input_mode: InputMode,
     *,
@@ -775,6 +877,7 @@ def build_application(
     document: Document,
     options: EditorOptions,
     *,
+    program_name: str = "inedit.py",
     initial_height: int | None = None,
     input: Any = None,
     output: Any = None,
@@ -790,6 +893,7 @@ def build_application(
     state = EditorState(
         document=document,
         original_text=document.text,
+        program_name=program_name,
         auto_height=options.height is None,
         requested_height=requested_initial_height,
         effective_height=effective_initial_height,
@@ -828,6 +932,21 @@ def build_application(
     def invalidate() -> None:
         if application_reference:
             application_reference[0].invalidate()
+
+    def finish_editor(
+        application: Application[EditorResult],
+        reason: ExitReason,
+    ) -> None:
+        """Exit through prompt-toolkit's final retained render."""
+
+        if application.is_done:
+            return
+        state.final_summary = capture_final_summary(
+            state,
+            text_area.buffer.text,
+        )
+        application.erase_when_done = False
+        application.exit(result=EditorResult(reason))
 
     def buffer_changed(_buffer: Any) -> None:
         state.discard_armed = False
@@ -880,6 +999,7 @@ def build_application(
                 return False
             state.document = current_document
             state.original_text = current_text
+            state.saved_during_session = True
             state.discard_armed = False
             state.message = "Saved"
         else:
@@ -905,7 +1025,7 @@ def build_application(
             state.message = None
             event.app.invalidate()
         else:
-            event.app.exit(result=EditorResult(ExitReason.SAVED))
+            finish_editor(event.app, ExitReason.SAVED)
 
     @bindings.add(
         "c-x",
@@ -939,9 +1059,9 @@ def build_application(
             event.app.invalidate()
             return
         if not state.is_modified(text_area.buffer.text):
-            event.app.exit(result=EditorResult(ExitReason.CANCELED))
+            finish_editor(event.app, ExitReason.CANCELED)
         elif state.discard_armed:
-            event.app.exit(result=EditorResult(ExitReason.CANCELED))
+            finish_editor(event.app, ExitReason.CANCELED)
         else:
             state.discard_armed = True
             state.message = SIGNAL_DISCARD_MESSAGE
@@ -1033,9 +1153,9 @@ def build_application(
         answer = event.data.casefold()
         if answer == "y":
             if save_buffer(event):
-                event.app.exit(result=EditorResult(ExitReason.SAVED))
+                finish_editor(event.app, ExitReason.SAVED)
         elif answer == "n":
-            event.app.exit(result=EditorResult(ExitReason.CANCELED))
+            finish_editor(event.app, ExitReason.CANCELED)
 
     emacs_mode = Condition(
         lambda: not options.vi
@@ -1102,7 +1222,7 @@ def build_application(
     )
     def vi_write_if_modified_and_exit(event: Any) -> None:
         if not state.is_modified(text_area.buffer.text) or save_buffer(event):
-            event.app.exit(result=EditorResult(ExitReason.SAVED))
+            finish_editor(event.app, ExitReason.SAVED)
 
     @bindings.add(":", filter=vi_normal_editor, eager=True)
     def open_ex_command(event: Any) -> None:
@@ -1143,10 +1263,10 @@ def build_application(
                 state.message = "No write since last change"
                 event.app.invalidate()
             else:
-                event.app.exit(result=EditorResult(ExitReason.SAVED))
+                finish_editor(event.app, ExitReason.SAVED)
         elif command == "wq":
             if save_buffer(event):
-                event.app.exit(result=EditorResult(ExitReason.SAVED))
+                finish_editor(event.app, ExitReason.SAVED)
         elif command in ("h", "help"):
             state.help_visible = True
             help_area.buffer.cursor_position = 0
@@ -1288,6 +1408,14 @@ def build_application(
         )
         return FormattedText([("class:status", status)])
 
+    def final_summary_fragments() -> FormattedText:
+        columns = 80
+        if application_reference:
+            columns = application_reference[0].output.get_size().columns
+        assert state.final_summary is not None
+        summary = format_final_summary(state.final_summary, columns)
+        return FormattedText([("", summary)])
+
     status_window = Window(
         content=FormattedTextControl(status_fragments),
         height=1,
@@ -1295,19 +1423,41 @@ def build_application(
         wrap_lines=False,
         style="class:status",
     )
+    final_summary_window = Window(
+        content=FormattedTextControl(final_summary_fragments),
+        height=1,
+        dont_extend_height=True,
+        wrap_lines=False,
+    )
+    final_summary_visible = Condition(lambda: state.final_summary is not None)
     root = HSplit(
         [
             DynamicContainer(
                 lambda: help_area if state.help_visible else text_area
             ),
-            search_toolbar,
+            ConditionalContainer(
+                search_toolbar,
+                filter=~final_summary_visible,
+            ),
             ConditionalContainer(
                 command_area,
-                filter=ex_command_mode & ~is_searching,
+                filter=(
+                    ex_command_mode
+                    & ~is_searching
+                    & ~final_summary_visible
+                ),
             ),
             ConditionalContainer(
                 status_window,
-                filter=~ex_command_mode & ~is_searching,
+                filter=(
+                    ~ex_command_mode
+                    & ~is_searching
+                    & ~final_summary_visible
+                ),
+            ),
+            ConditionalContainer(
+                final_summary_window,
+                filter=final_summary_visible,
             ),
         ],
         height=lambda: state.effective_height,
@@ -1497,6 +1647,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     editor = build_application(
         document,
         options,
+        program_name=Path(sys.argv[0]).name or "inedit.py",
         initial_height=initial_height,
     )
     _guard_terminal_cursor_column(sys.stdin.fileno(), sys.stdout.fileno())

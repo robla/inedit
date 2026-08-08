@@ -409,6 +409,93 @@ class LayoutAndStateTests(unittest.TestCase):
             self.assertFalse(editor.application.full_screen)
             self.assertTrue(editor.application.erase_when_done)
 
+    def test_controlled_save_retains_a_plain_exact_byte_summary(self) -> None:
+        path = self.directory / "new.txt"
+
+        result, editor = self.run_editor(path, "hello\x13\x18")
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertFalse(editor.application.erase_when_done)
+        self.assertEqual(
+            editor.state.final_summary,
+            inedit.FinalSummary(
+                program_name="inedit.py",
+                display_path=str(path),
+                outcome=inedit.FinalOutcome.SAVED,
+                saved_during_session=True,
+                file_exists=True,
+                byte_count=5,
+            ),
+        )
+        self.assertEqual(
+            inedit.format_final_summary(editor.state.final_summary, 200),
+            f"inedit.py: saved 5 bytes to {path}",
+        )
+
+    def test_final_summary_counts_encoded_bom_and_crlf_bytes(self) -> None:
+        path = self.directory / "windows.txt"
+        path.write_bytes(codecs.BOM_UTF8 + b"one\r\n")
+
+        result, editor = self.run_editor(path, "x\x13\x18")
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_bytes(), codecs.BOM_UTF8 + b"xone\r\n")
+        summary = editor.state.final_summary
+        assert summary is not None
+        self.assertEqual(summary.byte_count, 9)
+
+    def test_discard_summary_distinguishes_unsaved_and_previous_save(self) -> None:
+        path = self.directory / "new.txt"
+
+        result, editor = self.run_editor(path, "one\x13two\x18n")
+
+        self.assertIs(result.reason, inedit.ExitReason.CANCELED)
+        self.assertEqual(path.read_bytes(), b"one")
+        summary = editor.state.final_summary
+        assert summary is not None
+        self.assertIs(summary.outcome, inedit.FinalOutcome.DISCARDED)
+        self.assertTrue(summary.saved_during_session)
+        self.assertEqual(summary.byte_count, 3)
+        self.assertEqual(
+            inedit.format_final_summary(summary, 200),
+            "inedit.py: unsaved edits discarded; "
+            f"previous save kept (3 bytes): {path}",
+        )
+
+    def test_discarding_a_new_buffer_reports_that_no_file_was_created(self) -> None:
+        path = self.directory / "new.txt"
+
+        result, editor = self.run_editor(path, "x\x18n")
+
+        self.assertIs(result.reason, inedit.ExitReason.CANCELED)
+        self.assertFalse(path.exists())
+        summary = editor.state.final_summary
+        assert summary is not None
+        self.assertFalse(summary.file_exists)
+        self.assertEqual(
+            inedit.format_final_summary(summary, 200),
+            "inedit.py: unsaved edits discarded; "
+            f"no file created: {path}",
+        )
+
+    def test_final_summary_truncates_the_path_from_the_left(self) -> None:
+        summary = inedit.FinalSummary(
+            program_name="inedit.py",
+            display_path="directory/" + "very-long-name-" * 8,
+            outcome=inedit.FinalOutcome.UNCHANGED,
+            saved_during_session=False,
+            file_exists=True,
+            byte_count=1,
+        )
+
+        rendered = inedit.format_final_summary(summary, 60)
+
+        self.assertEqual(inedit._display_width(rendered), 60)
+        self.assertTrue(
+            rendered.startswith("inedit.py: no changes; 1 byte on disk: …")
+        )
+        self.assertTrue(rendered.endswith("very-long-name-"))
+
     def test_status_truncates_filename_from_left(self) -> None:
         path = self.directory / ("very-long-name-" * 8)
         document = inedit.load_document(path)
@@ -1130,6 +1217,8 @@ class LayoutAndStateTests(unittest.TestCase):
             result = editor.application.run(set_exception_handler=False)
         self.assertIs(result.reason, inedit.ExitReason.ERROR)
         self.assertIn("at least 5", result.message or "")
+        self.assertTrue(editor.application.erase_when_done)
+        self.assertIsNone(editor.state.final_summary)
 
     def test_global_save_binding_works_in_vi_mode(self) -> None:
         path = self.directory / "existing.txt"
@@ -1368,6 +1457,17 @@ class PtyIntegrationTests(unittest.TestCase):
         self.assertEqual(saved[2], b"alpha\nbeta")
         self.assertEqual(canceled[0], 130)
         self.assertEqual(canceled[2], b"original")
+        self.assertTrue(
+            self.terminal_updates_contain(
+                saved[1], b"inedit.py: saved 10 bytes to"
+            )
+        )
+        self.assertTrue(
+            self.terminal_updates_contain(
+                canceled[1],
+                b"inedit.py: unsaved edits discarded; 8 bytes remain on disk:",
+            )
+        )
         self.assert_rendering_contract(saved[1], saved[3])
         self.assert_rendering_contract(canceled[1], canceled[3])
 
@@ -1379,6 +1479,17 @@ class PtyIntegrationTests(unittest.TestCase):
         self.assertEqual(interrupted[2], b"original")
         self.assertEqual(terminated[0], 1)
         self.assertEqual(terminated[2], b"original")
+        self.assertTrue(
+            self.terminal_updates_contain(
+                interrupted[1],
+                b"inedit.py: unsaved edits discarded; 8 bytes remain on disk:",
+            )
+        )
+        self.assertFalse(
+            self.terminal_updates_contain(
+                terminated[1], b"inedit.py: no changes;"
+            )
+        )
         self.assert_rendering_contract(interrupted[1], interrupted[3])
         self.assert_rendering_contract(terminated[1], terminated[3])
 
@@ -1456,6 +1567,11 @@ class PtyIntegrationTests(unittest.TestCase):
 
         self.assertEqual(automatic[0], 0)
         self.assertEqual(automatic[2], b"original")
+        self.assertTrue(
+            self.terminal_updates_contain(
+                automatic[1], b"inedit.py: no changes; 8 bytes on disk:"
+            )
+        )
         self.assert_rendering_contract(automatic[1], automatic[3])
 
     def test_editor_breaks_the_line_when_invoked_mid_row(self) -> None:

@@ -74,6 +74,40 @@ buffer exits immediately. A modified buffer displays
 Thus, `Ctrl-C Ctrl-C` cannot discard the buffer: the first press opens the
 prompt and the second returns to editing.
 
+## Display after exit
+
+After an editor-controlled exit, `inedit` leaves the final text viewport and
+line numbers in the terminal's normal-screen history. The inverted status bar
+is replaced by a plain one-line summary, and the next shell prompt starts
+below the retained region. Depending on the session, the summary reports one
+of these outcomes:
+
+```text
+inedit.py: saved 842 bytes to COMMIT_EDITMSG
+inedit.py: no changes; 842 bytes on disk: COMMIT_EDITMSG
+inedit.py: unsaved edits discarded; 842 bytes remain on disk: COMMIT_EDITMSG
+inedit.py: unsaved edits discarded; previous save kept (842 bytes): COMMIT_EDITMSG
+inedit.py: unsaved edits discarded; no file created: new.txt
+```
+
+The byte count is the exact size of the resulting file on disk, including a
+UTF-8 BOM or CRLF encoding when present. The leading name is the basename used
+to invoke the program, and a long filename is shortened from the left to fit
+the terminal. A discard deliberately preserves the last visible buffer rows,
+which can include unsaved text; the summary makes clear that those edits were
+not written.
+
+This retention applies to normal saved, unchanged, and discard exits, including
+the second real `SIGINT` used to confirm a discard. `SIGTERM`, `SIGHUP`, a
+terminal-size failure, or an unexpected exception erases the application
+region after restoring the terminal rather than leaving a possibly incomplete
+or misleading view.
+
+Retained editor text becomes part of terminal scrollback. Avoid this editor for
+sensitive content when terminal history itself would be inappropriate. There
+is currently no erase-on-exit option; one can be added if real workflows show
+that both policies are needed.
+
 ## Display height
 
 In automatic mode, the editor starts with one text row per logical buffer row,
@@ -250,11 +284,10 @@ save/discard prompt instead of vi-style `:q` behavior.
 | `2` | Command-line usage error |
 | `130` | Exited through cancellation or `N`; any earlier `Ctrl-S` save remains on disk |
 
-The current version erases its bounded editor region on exit. Retaining the
-final rendered editor view in terminal history—similar to the visible result
-associated with `less -X`—is planned for evaluation; see
-[roadmap.md](roadmap.md). Terminal modes and cursor visibility must be restored
-regardless of which display policy is selected.
+Normal editor-controlled exits retain the bounded text viewport and replace
+the status bar with the plain summary described above. Abnormal termination
+paths erase the region. Both policies restore terminal modes, bracketed paste,
+signal handlers, and cursor visibility before returning control to the caller.
 
 ## Current limitations
 

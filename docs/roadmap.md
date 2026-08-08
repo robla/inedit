@@ -8,7 +8,9 @@ bounded-height editor rendered below the shell prompt without switching to the
 terminal's alternate screen. `Alt-Up` and `Alt-Down` adjust that height during
 the current session; their `Height: N` feedback clears one second after the
 most recent adjustment. With no explicit height, the editor automatically uses
-7–20 text rows plus its footer and grows with the buffer.
+7–20 text rows plus its footer and grows with the buffer. On a controlled exit,
+the final viewport remains in terminal history with a plain saved, unchanged,
+or discarded summary in place of the live status bar.
 
 The implementation uses **prompt_toolkit**, not raw terminal escape sequences,
 and targets prompt-toolkit `>=3.0.36,<4`. That baseline provides a multiline
@@ -54,32 +56,28 @@ empty-query handling, Unicode text, replacement after search wraparound, and
 undo grouping. Documentation must clearly distinguish literal replacement from
 regular-expression replacement if both are not implemented together.
 
-### 2. Decide whether the final editor display should remain visible
+### 2. Refine retained exit display
 
-The current application uses `erase_when_done=True`, which removes the bounded
-editor region before returning to the shell. Evaluate a less `-X`-style user
-experience by setting it to false so the final rendered editor view remains in
-terminal history and the next shell prompt appears below it.
+The baseline is implemented. Saved, unchanged, and explicitly discarded exits
+retain the final viewport by default, leave its text rows, scrolling position,
+and line numbers intact, and replace the inverted live status bar with a plain
+one-line result. The summary identifies the invocation basename and visible
+path, reports the exact on-disk byte count when available, and distinguishes a
+discard after an earlier save from a discard that wrote nothing. The next
+shell prompt starts below the retained region.
 
-The provisional preference is to retain the final display by default. Avoid
-adding a permanent option until testing shows that both behaviors serve real
-workflows; if both are useful, prefer an explicit `--erase-on-exit` option over
-making retention opt-in. Resolve these cases before changing the default:
+Abnormal exceptions, terminal-size failures, `SIGTERM`, and `SIGHUP` keep the
+erase-on-exit behavior. A confirmed `SIGINT` discard is an editor-controlled
+outcome and is retained. This split prevents a partial failure screen from
+being mistaken for a completed edit while still providing useful history for
+ordinary workflows.
 
-- a successful exit should leave a view consistent with the bytes saved;
-- discard and cancellation must not leave unsaved text looking as though it
-  was committed to disk;
-- exit from a save prompt, help view, or search prompt must not strand a stale
-  transient UI in terminal history;
-- signals and exceptions must restore terminal modes even if their display is
-  erased; and
-- retained output must work in short terminals, after resizing, and when the
-  last line is wider than the terminal.
-
-PTY coverage should locate the next shell cursor relative to the retained
-region and continue to prove that output above the editor is untouched. If the
-best policy differs by exit reason, document that explicitly rather than
-treating one `erase_when_done` value as the whole design.
+Do not add configuration merely for symmetry. If privacy-sensitive or
+scripted workflows demonstrate a real need for both behaviors, add an explicit
+`--erase-on-exit` option rather than making retention opt-in. Remaining PTY
+work can reconstruct the final screen and assert the exact next-prompt cursor
+position after vertical and horizontal scrolling, terminal resizing, help,
+and active-search transitions.
 
 ### 3. Add optional system-clipboard integration
 
@@ -231,17 +229,18 @@ The current prompt_toolkit application uses:
 ```python
 Application(
     full_screen=False,
-    erase_when_done=True,
+    erase_when_done=True,  # safety default; controlled exits switch this off
     ...,
 )
 ```
 
 `full_screen=False` is a hard requirement: no `smcup`/`rmcup` or equivalent
-alternate-screen sequence may be emitted. `erase_when_done=True` currently
-removes the editor region before returning control to the shell, but the
-near-term retention work above may change that value or make it depend on the
-exit result. Output that preceded the invocation must remain visible and
-unchanged throughout the edit under either policy.
+alternate-screen sequence may be emitted. The application starts with
+`erase_when_done=True`; a controlled exit first prepares its final summary and
+sets the value to false, allowing prompt-toolkit's final done render to retain
+the region and place the cursor below it. Error and termination paths leave the
+safety default untouched. Output that preceded the invocation must remain
+visible and unchanged throughout the edit under either policy.
 
 ## Editing behavior
 
@@ -342,7 +341,8 @@ The first implementation is one importable script with small testable units:
   returns the refreshed document snapshot needed for another save.
 - `EditorState` tracks the document, original text, automatic-height mode,
   requested and effective heights, transient views and prompts, status message,
-  and armed discard confirmation.
+  armed discard confirmation, successful-write history, and prepared final
+  summary.
 - `build_application()` constructs the editing/help/command areas, search
   toolbar, status control, conditional layout, styles, and key bindings.
 - `main()` performs preflight checks, runs the application, and maps outcomes to
@@ -350,8 +350,9 @@ The first implementation is one importable script with small testable units:
 
 The central layout is an `HSplit` containing a dynamic editor/help body and a
 one-row footer. The footer conditionally displays the search toolbar, vi Ex
-command line, or status `Window`; the search toolbar remains in the layout
-tree even while hidden so prompt-toolkit can focus it. Configure the editing
+command line, live status `Window`, or plain final-summary `Window`; the search
+toolbar remains in the layout tree even while hidden so prompt-toolkit can
+focus it. Configure the editing
 area with `multiline=True`, `wrap_lines=False`, a scrollbar, the selected
 line-number setting, a search field, and a callable height of
 `effective_height - 1`. Buffer change events update modified state, clear
@@ -416,6 +417,9 @@ integration tests:
 - Insert and delete lines, save, and verify exact file bytes and status `0`.
 - Cancel an unchanged and a modified buffer, verify status `130`, and verify the
   original bytes remain unchanged.
+- Confirm that controlled exits retain the text and line-number viewport, use a
+  non-inverted result row with the exact disk byte count, and leave the next
+  prompt below it; confirm abnormal termination erases instead.
 - Simulate a save error and an external file change and confirm that editing
   continues without overwriting the target.
 - Send resize and termination signals and verify terminal cleanup.

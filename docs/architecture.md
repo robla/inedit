@@ -59,6 +59,7 @@ class Document:
 class EditorState:
     document: Document
     original_text: str
+    program_name: str = "inedit.py"
     message: str | None = None
     discard_armed: bool = False
     help_visible: bool = False
@@ -67,6 +68,8 @@ class EditorState:
     auto_height: bool = False
     requested_height: int = 8
     effective_height: int = 8
+    saved_during_session: bool = False
+    final_summary: FinalSummary | None = None
 
     def is_modified(self, current_text: str) -> bool: ...
 
@@ -95,7 +98,8 @@ state. `auto_height` records whether buffer growth may still enlarge the
 region. Keep `requested_height` as the mutable per-session target and
 `effective_height` as the value currently permitted by the terminal. This
 separation lets startup policy, user adjustment, and terminal capping evolve
-independently.
+independently. `saved_during_session` and `final_summary` record explicit exit
+facts; they must not be reconstructed from a generic process result.
 
 ## Command-line and startup flow
 
@@ -183,11 +187,12 @@ Do not install an accept handler: Enter must insert a newline. Construct a
 second read-only, scrollable `TextArea` for help and a one-line `TextArea` for
 vi Ex commands. A `DynamicContainer` selects the editor or help body without
 replacing the editing buffer. The `HSplit` then contains that body, the search
-toolbar, and complementary conditional containers for the Ex command area and
-status window. Keeping the search toolbar in the layout even while hidden is
-required so prompt-toolkit can focus it. Exactly one footer occupies one row;
-the total height remains `state.effective_height`. Focus the editing text area
-in the `Layout` and configure the application explicitly:
+toolbar, and complementary conditional containers for the Ex command area,
+live status window, and final summary window. Keeping the search toolbar in
+the layout even while hidden is required so prompt-toolkit can focus it.
+Exactly one footer occupies one row; the total height remains
+`state.effective_height`. Focus the editing text area in the `Layout` and
+configure the application explicitly:
 
 ```python
 Application(
@@ -197,16 +202,17 @@ Application(
     on_reset=initialize_vi_mode,
     enable_page_navigation_bindings=True,
     full_screen=False,
-    erase_when_done=True,
+    erase_when_done=True,  # changed only by a controlled exit
     terminal_size_polling_interval=0.5,
 )
 ```
 
-`full_screen=False` is an invariant and must have a regression test. The
-current `erase_when_done=True` setting is provisional: [roadmap.md](roadmap.md)
-tracks whether retaining the final display should become the default. In vi
-mode, the `on_reset` handler must select `InputMode.NAVIGATION` because
-prompt-toolkit otherwise resets every application run to Insert mode.
+`full_screen=False` is an invariant and must have a regression test. Begin with
+`erase_when_done=True` so an exception or termination signal retains the safe
+erase behavior. A controlled exit changes it to false only after preparing the
+final summary described below. In vi mode, the `on_reset` handler must select
+`InputMode.NAVIGATION` because prompt-toolkit otherwise resets every
+application run to Insert mode.
 
 ### Resize behavior
 
@@ -250,22 +256,38 @@ a terminal resize.
 
 Treat terminal-mode restoration and display erasure as separate concerns.
 `Application` must always restore raw mode, bracketed paste, cursor visibility,
-and signal handlers. Whether it erases the last rendered editor region is an
-open product decision, not a terminal-safety invariant.
+and signal handlers. A controlled exit captures a `FinalSummary` before calling
+`Application.exit()`. It records the invocation basename, visible path,
+saved/unchanged/discarded outcome, whether any save succeeded during the
+session, whether the target still exists, and its exact final `stat().st_size`.
+The state then sets `erase_when_done=False`.
 
-The likely target is `erase_when_done=False` for successful exits so the final
-rendered editor view remains useful in terminal history, similar to the visible
-result users associate with `less -X`. Before adopting that target, determine
-what remains on screen for every exit path. In particular, a discard must not
-leave unsaved text looking saved, and exiting from the save prompt must not
-preserve a stale question after it has been answered. Possible policies include
-a final render with an explicit saved/discarded result, or erasing only
-canceled and abnormal sessions.
+Prompt-toolkit already performs one final render with `is_done=True` while
+unwinding `Application.run()`. Use that lifecycle rather than manually emitting
+ANSI sequences. The final-summary condition hides search, Ex, and live-status
+footers, shows a normal-style one-row summary, and otherwise leaves the dynamic
+body, viewport, line numbers, and effective height unchanged. Prompt-toolkit's
+done render puts the cursor below the application for the next shell prompt.
+Truncate only the path from the left when the outcome prefix fits; if even the
+prefix is wider than the terminal, truncate it from the right.
 
-If one policy works well for all normal exits, prefer it as the default without
-adding configuration. Add a CLI switch only when PTY testing or real workflows
-demonstrate a need for both retained and erased output. Tests must assert the
-cursor position for the next shell prompt as well as the retained cells.
+Outcome selection is factual rather than inferred from the process status:
+
+- a buffer different from `original_text` is `DISCARDED`;
+- an unmodified buffer after at least one successful write is `SAVED`; and
+- an unmodified buffer with no session write is `UNCHANGED`.
+
+This makes a save followed by more edits and `N` report that unsaved edits were
+discarded while the previous save remains on disk. A new modified buffer
+discarded before any save reports that no file was created. CRLF and BOM files
+use the on-disk byte count, not the normalized buffer length.
+
+Use retention for all editor-controlled exits, including save, unchanged quit,
+explicit `N`, and the second `SIGINT` discard confirmation. Leave
+`erase_when_done=True` for terminal-size failures, unexpected exceptions,
+`SIGTERM`, and `SIGHUP`. Do not add a display-policy option until an actual
+workflow demonstrates that both behaviors are needed. Document that retained
+buffer text becomes part of terminal scrollback.
 
 ## State and key bindings
 
@@ -526,6 +548,9 @@ Use temporary directories for every filesystem test. Unit-test:
 - temporary-file cleanup on write, fsync, and replace failures;
 - dirty-state reversal through undo, the two-stage SIGINT state machine, and
   the shared Ctrl-X/Ctrl-C `Y`/`N`/Ctrl-C prompt;
+- final-summary outcome selection, exact on-disk byte counts, prior-save and
+  no-file-created distinctions, left path truncation, and retained-versus-
+  erased exit policy;
 - Left/Right traversal in both directions across logical-line boundaries,
   including vi insert mode;
 - exact exit-status mapping.
