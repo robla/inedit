@@ -339,6 +339,29 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "x")
 
+    def test_right_arrow_crosses_to_start_of_next_line(self) -> None:
+        path = self.directory / "lines.txt"
+        path.write_text("one\ntwo", encoding="utf-8")
+        result, _editor = self.run_editor(path, "\x05\x1b[Cx\x13\x18")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one\nxtwo")
+
+    def test_left_arrow_crosses_to_end_of_previous_line(self) -> None:
+        path = self.directory / "lines.txt"
+        path.write_text("one\ntwo", encoding="utf-8")
+        result, _editor = self.run_editor(path, "\x0e\x1b[Dx\x13\x18")
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "onex\ntwo")
+
+    def test_right_arrow_crosses_lines_in_vi_insert_mode(self) -> None:
+        path = self.directory / "lines.txt"
+        path.write_text("one\ntwo", encoding="utf-8")
+        result, _editor = self.run_editor(
+            path, "\x1b[F\x1b[Cx\x13\x18", vi=True
+        )
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "one\nxtwo")
+
     def test_alt_q_fills_the_current_paragraph(self) -> None:
         path = self.directory / "paragraph.txt"
         text = (

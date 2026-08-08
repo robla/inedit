@@ -26,7 +26,7 @@ from prompt_toolkit.application import Application, run_in_terminal
 from prompt_toolkit.buffer import reshape_text
 from prompt_toolkit.clipboard import InMemoryClipboard
 from prompt_toolkit.enums import EditingMode
-from prompt_toolkit.filters import Condition
+from prompt_toolkit.filters import Condition, vi_insert_mode
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -68,7 +68,8 @@ External editor
   Alt-V         Open the buffer in $VISUAL or $EDITOR (else vi)
 
 Movement
-  Arrows        Move by character or logical line
+  Left / Right  Move by character, crossing line boundaries
+  Up / Down     Move by logical line
   Home / End    Start / end of logical line
   PageUp/Down   Move by a viewport
   Ctrl-A/E      Start / end of logical line
@@ -757,6 +758,24 @@ def build_application(
         and not state.help_visible
         and not state.exit_prompt
     )
+    arrow_mode = emacs_mode | vi_insert_mode
+
+    def move_by_character(event: Any, count: int) -> None:
+        buffer = event.current_buffer
+        if (
+            buffer.selection_state is not None
+            and buffer.selection_state.shift_mode
+        ):
+            buffer.exit_selection()
+        buffer.cursor_position += count
+
+    @bindings.add("left", filter=arrow_mode, eager=True)
+    def move_left(event: Any) -> None:
+        move_by_character(event, -event.arg)
+
+    @bindings.add("right", filter=arrow_mode, eager=True)
+    def move_right(event: Any) -> None:
+        move_by_character(event, event.arg)
 
     @bindings.add(
         "c-z",

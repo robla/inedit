@@ -166,7 +166,8 @@ current keys include:
 
 | Key | Action |
 |---|---|
-| Arrow keys, `Home`, `End` | Move the cursor |
+| `Left`, `Right` | Move by character, crossing logical-line boundaries |
+| `Up`, `Down`, `Home`, `End` | Move by logical line or within one |
 | `PageUp`, `PageDown` | Scroll by a viewport |
 | `Enter` | Insert a newline |
 | `Backspace`, `Delete` | Delete text |

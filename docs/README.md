@@ -40,7 +40,8 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 | `Ctrl-Z`, `Ctrl-_` | Undo |
 | `Alt-E` | Redo |
 | `Ctrl-Y` | Paste/yank the latest internal clipboard value |
-| Arrow keys | Move by character or logical line |
+| `Left`, `Right` | Move by character, crossing logical-line boundaries |
+| `Up`, `Down` | Move by logical line |
 | `Home`, `End` | Move to the start or end of the logical line |
 | `PageUp`, `PageDown` | Move by a viewport |
 | `Backspace`, `Delete` | Delete without changing the internal clipboard |
@@ -109,6 +110,7 @@ keys and `PageUp`/`PageDown` navigate the help text.
 
 | Key | Action |
 |---|---|
+| `Left`, `Right` | Backward or forward one character, crossing logical-line boundaries |
 | `Ctrl-A`, `Ctrl-E` | Start or end of the logical line |
 | `Ctrl-B`, `Ctrl-F` | Backward or forward one character |
 | `Ctrl-P`, `Ctrl-N` | Previous or next logical line |

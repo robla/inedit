@@ -206,11 +206,15 @@ Register a buffer text-change callback. On every actual edit it must:
 - clear a transient save error; and
 - invalidate the application so the status row redraws.
 
-Let prompt_toolkit provide arrows, Home, End, deletion, newline insertion, vi
-navigation, and viewport movement. Add eager global bindings for Ctrl-S,
-Ctrl-X, Ctrl-C, and Ctrl-G so save, exit, and help do not depend on editing
-mode. In the default mode, let prompt-toolkit own selection, cutting, copying,
-and yanking. Add only `Ctrl-Z` undo and `Alt-E` redo as editing conveniences.
+Let prompt_toolkit provide vertical movement, Home, End, deletion, newline
+insertion, vi navigation, and viewport movement. Its horizontal cursor methods
+stop at logical-line boundaries, so add narrow Left and Right bindings that
+move one absolute buffer character in Emacs mode and vi insert mode. This makes
+the newline traversable without changing vi normal-mode motions. Add eager
+global bindings for Ctrl-S, Ctrl-X, Ctrl-C, and Ctrl-G so save, exit, and help
+do not depend on editing mode. In the default mode, let prompt-toolkit own
+selection, cutting, copying, and yanking. Add only `Ctrl-Z` undo and `Alt-E`
+redo as editing conveniences.
 
 Ctrl-S follows one path:
 
@@ -257,6 +261,7 @@ newline, undo, and clipboard edge cases.
 
 - `Ctrl-G` help;
 - equivalent `Ctrl-X`/Ctrl-C prompted exit and `Ctrl-S` save-without-exit;
+- Left/Right traversal across logical-line boundaries;
 - `Ctrl-Z` undo and `Alt-E` redo; and
 - the `inedit` save and safe-exit operations that protect the file lifecycle.
 
@@ -372,6 +377,8 @@ Use temporary directories for every filesystem test. Unit-test:
 - temporary-file cleanup on write, fsync, and replace failures;
 - dirty-state reversal through undo, the two-stage SIGINT state machine, and
   the shared Ctrl-X/Ctrl-C `Y`/`N`/Ctrl-C prompt;
+- Left/Right traversal in both directions across logical-line boundaries,
+  including vi insert mode;
 - exact exit-status mapping.
 
 Use prompt_toolkit pipe input and dummy output for key-binding tests. Send text,
