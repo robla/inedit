@@ -4,8 +4,9 @@
 
 The first version of `inedit.py` is implemented as a minimal text editor for
 short-lived files such as Git commit messages. Its defining behavior is a
-fixed-height editor rendered below the shell prompt without switching to the
-terminal's alternate screen.
+bounded-height editor rendered below the shell prompt without switching to the
+terminal's alternate screen. `Alt-Up` and `Alt-Down` adjust that height during
+the current session.
 
 The implementation uses **prompt_toolkit**, not raw terminal escape sequences,
 and targets prompt-toolkit `>=3.0.36,<4`. That baseline provides a multiline
@@ -113,6 +114,7 @@ Current and tentative direction:
   selection exists;
 - keep the internal clipboard at one entry and do not advertise yank-pop;
 - retain `Ctrl-Z` as an undo convenience and `Alt-E` as redo for now;
+- keep `Alt-Up` and `Alt-Down` as global, session-local height adjustments;
 - keep `Ctrl-S` as save-without-exit;
 - keep main-screen `Ctrl-C` equivalent to `Ctrl-X`; and
 - keep `--vi` available, with global save and exit commands documented
@@ -151,10 +153,26 @@ belongs in help; the status line should favor help, save, exit, and the active
 transient prompt. An active incremental search or vi Ex command temporarily
 uses this same footer row, so neither feature changes the editor's height.
 
+### 7. Evaluate a content-aware default height
+
+Runtime height adjustment is independent of the startup policy: editor state
+keeps a mutable requested session height separately from the terminal-capped
+effective height. A future default may use the loaded document to choose a
+smaller initial region—for example, seven text rows plus the footer for a
+seven-line file—when neither `--height` nor `INEDIT_HEIGHT` was explicitly
+provided.
+
+Before adopting that policy, define how empty files, a final newline, long
+wrapped display lines, the help view, and short terminals affect the count.
+Explicit command-line and environment values should continue to take
+precedence, and the automatic choice should remain bounded by the same
+four-row minimum and one-outside-row maximum.
+
 ## Goals
 
 - Keep shell output above the editor visible while editing.
-- Use a bounded region, 20 terminal rows by default.
+- Use a bounded region, initially 20 terminal rows by default and adjustable
+  during editing.
 - Make `Enter` insert a newline rather than submit the buffer.
 - Open one named file and work as an `$EDITOR` command for common workflows
   such as writing Git commit messages.
@@ -170,8 +188,8 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 ```
 
 - `FILE` is required. One file is supported.
-- `--height ROWS` sets the total rendered height, including the status line.
-  The default is `${INEDIT_HEIGHT:-20}`.
+- `--height ROWS` sets the initial total rendered height, including the status
+  line. The default is `${INEDIT_HEIGHT:-20}`.
 - `--vi` selects prompt_toolkit's vi editing mode, starting in Normal mode.
   Emacs mode is the default.
 - `--no-line-numbers` hides the line-number gutter. Numbers are shown by
@@ -179,9 +197,10 @@ inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 - `--` permits a filename beginning with `-`.
 - Standard `-h`/`--help` output may be supplied by `argparse`.
 
-`ROWS` must be at least 4. At runtime, the editor should cap its height so that
-at least one terminal row remains outside the application. A terminal too small
-for a four-row editor is an error.
+`ROWS` must be at least 4. `Alt-Up` and `Alt-Down` adjust the requested session
+height one row at a time. At runtime, the editor caps its effective height so
+that at least one terminal row remains outside the application. A terminal too
+small for a four-row editor is an error.
 
 Reading file content from stdin and writing edited content to stdout are out of
 scope for version 1. The user interface requires a TTY. Diagnostics go to
@@ -232,6 +251,7 @@ current keys include:
 | `Backspace`, `Delete` | Delete text |
 | `Ctrl-A`, `Ctrl-E` | Move to start/end of logical line |
 | `Ctrl-G` | Open or close inline help |
+| `Alt-Up`, `Alt-Down` | Reduce or increase the editor height by one row |
 | `Ctrl-Z`, `Ctrl-_` | Undo |
 | `Alt-E` | Redo |
 | `Ctrl-Space` | Start a selection (prompt-toolkit) |
@@ -314,8 +334,9 @@ The first implementation is one importable script with small testable units:
   and the file-change fingerprint.
 - `save_document()` performs conflict checking and atomic replacement, then
   returns the refreshed document snapshot needed for another save.
-- `EditorState` tracks the document, original text, transient views and
-  prompts, status message, and armed discard confirmation.
+- `EditorState` tracks the document, original text, requested and effective
+  heights, transient views and prompts, status message, and armed discard
+  confirmation.
 - `build_application()` constructs the editing/help/command areas, search
   toolbar, status control, conditional layout, styles, and key bindings.
 - `main()` performs preflight checks, runs the application, and maps outcomes to
@@ -326,7 +347,7 @@ one-row footer. The footer conditionally displays the search toolbar, vi Ex
 command line, or status `Window`; the search toolbar remains in the layout
 tree even while hidden so prompt-toolkit can focus it. Configure the editing
 area with `multiline=True`, `wrap_lines=False`, a scrollbar, the selected
-line-number setting, a search field, and a fixed height of
+line-number setting, a search field, and a callable height of
 `effective_height - 1`. Buffer change events update modified state, clear
 discard confirmation, and invalidate the status line.
 
@@ -367,7 +388,8 @@ editing behavior.
 
 ## Ongoing verification
 
-Unit tests cover and should continue to cover argument parsing, height capping,
+Unit tests cover and should continue to cover argument parsing, initial and
+runtime height adjustment and capping,
 UTF-8/BOM handling, LF and CRLF preservation, final-newline preservation,
 new-file creation, permission preservation, conflict detection, and cleanup
 after failed saves.
@@ -382,6 +404,8 @@ integration tests:
 - Assert that captured output never contains alternate-screen sequences such as
   `CSI ? 1049 h`, `CSI ? 1047 h`, or `CSI ? 47 h`.
 - Verify that a requested height of 20 never renders a larger region.
+- Use `Alt-Up` and `Alt-Down` to shrink and expand the live region, verify its
+  status feedback, and confirm that output above it remains untouched.
 - Insert and delete lines, save, and verify exact file bytes and status `0`.
 - Cancel an unchanged and a modified buffer, verify status `130`, and verify the
   original bytes remain unchanged.

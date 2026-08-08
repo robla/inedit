@@ -17,8 +17,8 @@ help and the exit flow, rather than replacing the editing engine.
 inedit.py [--height ROWS] [--vi] [--no-line-numbers] FILE
 ```
 
-- `--height ROWS` changes the total editor height. The default is
-  `${INEDIT_HEIGHT:-20}`.
+- `--height ROWS` sets the initial total editor height. The default is
+  `${INEDIT_HEIGHT:-20}`. The height can be adjusted during the session.
 - `--vi` selects prompt-toolkit's vi editing mode, starting in Normal mode.
   Emacs mode is the default.
 - `--no-line-numbers` hides the line-number gutter.
@@ -45,6 +45,8 @@ GIT_EDITOR='/absolute/path/to/inedit.py' git commit
 | `Ctrl-S` | Save and continue editing |
 | `Ctrl-C` | Same exit behavior as `Ctrl-X` |
 | `Ctrl-G` | Open or close the inline help view |
+| `Alt-Up` | Reduce the editor height by one row |
+| `Alt-Down` | Increase the editor height by one row |
 | `Enter` | Insert a newline |
 | `Ctrl-Z`, `Ctrl-_` | Undo |
 | `Alt-E` | Redo |
@@ -67,6 +69,19 @@ buffer exits immediately. A modified buffer displays
 
 Thus, `Ctrl-C Ctrl-C` cannot discard the buffer: the first press opens the
 prompt and the second returns to editing.
+
+## Display height
+
+`Alt-Up` reduces the total editor height by one row and `Alt-Down` increases it
+by one row. These commands work in both editing modes and in the help, search,
+and vi Ex views. Each adjustment lasts for the current invocation only; it does
+not change `INEDIT_HEIGHT` in the parent shell.
+
+The minimum total height is four rows, including the one-row footer. Expansion
+stops with one terminal row still outside the application. When a terminal
+resize temporarily limits the editor, it can return to its requested session
+height when room becomes available. A deliberate height adjustment instead
+uses the currently visible height as its starting point.
 
 ## Cutting, copying, and yanking
 
@@ -100,8 +115,8 @@ environment. Text killed inside `inedit` is not copied to the system clipboard.
 ## Search
 
 Search uses prompt-toolkit's incremental search and temporarily replaces the
-one-row status line with a search prompt. The editor remains the same fixed
-height. Matching wraps at the beginning or end of the buffer.
+one-row status line with a search prompt. Search does not itself change the
+current editor height. Matching wraps at the beginning or end of the buffer.
 
 In default Emacs mode:
 
@@ -130,9 +145,9 @@ undo grouping, and clipboard behavior inside the library that owns the
 buffer.
 
 `inedit` currently adds `Ctrl-G` help, equivalent `Ctrl-X`/`Ctrl-C` prompted
-exit, `Ctrl-S` save, `Ctrl-Z` undo, and `Alt-E` redo. System-clipboard support
-is a separate concern and must not silently replace the one-entry internal
-clipboard.
+exit, `Ctrl-S` save, `Ctrl-Z` undo, `Alt-E` redo, and `Alt-Up`/`Alt-Down`
+display-height adjustment. System-clipboard support is a separate concern and
+must not silently replace the one-entry internal clipboard.
 
 ## Inline help
 

@@ -266,6 +266,26 @@ class LayoutAndStateTests(unittest.TestCase):
         with self.assertRaises(inedit.TerminalError):
             inedit.effective_height(20, 4)
 
+    def test_adjusted_height_changes_one_row_and_obeys_bounds(self) -> None:
+        self.assertEqual(inedit.adjusted_height(8, -1, 24), 7)
+        self.assertEqual(inedit.adjusted_height(8, 1, 24), 9)
+        self.assertEqual(inedit.adjusted_height(4, -1, 24), 4)
+        self.assertEqual(inedit.adjusted_height(8, 1, 9), 8)
+
+    def test_startup_request_is_distinct_from_initial_terminal_cap(self) -> None:
+        path = self.directory / "new.txt"
+        document = inedit.load_document(path)
+        with create_pipe_input() as pipe:
+            editor = inedit.build_application(
+                document,
+                inedit.EditorOptions(path, 20, False, True),
+                initial_height=8,
+                input=pipe,
+                output=DummyOutput(),
+            )
+        self.assertEqual(editor.state.requested_height, 20)
+        self.assertEqual(editor.state.effective_height, 8)
+
     def test_application_is_inline_and_erased_when_done(self) -> None:
         path = self.directory / "new.txt"
         document = inedit.load_document(path)
@@ -347,6 +367,39 @@ class LayoutAndStateTests(unittest.TestCase):
         result, _editor = self.run_editor(path, "x\x1a\x1be\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "x")
+
+    def test_alt_up_and_alt_down_adjust_runtime_height(self) -> None:
+        path = self.directory / "new.txt"
+        result, editor = self.run_editor(
+            path,
+            "\x1b[1;3A\x1b[1;3A\x1b[1;3B\x18",
+        )
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(editor.state.requested_height, 7)
+        self.assertEqual(editor.state.effective_height, 7)
+        self.assertEqual(editor.state.message, "Height: 7")
+
+    def test_runtime_height_adjustment_works_in_vi_normal_mode(self) -> None:
+        path = self.directory / "new.txt"
+        result, editor = self.run_editor(
+            path,
+            "\x1b[1;3A\x18",
+            vi=True,
+        )
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(editor.state.requested_height, 7)
+        self.assertEqual(editor.state.effective_height, 7)
+
+    def test_runtime_height_adjustment_works_in_vi_insert_mode(self) -> None:
+        path = self.directory / "new.txt"
+        result, editor = self.run_editor(
+            path,
+            "i\x1b[1;3A\x18",
+            vi=True,
+        )
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(editor.state.requested_height, 7)
+        self.assertEqual(editor.state.effective_height, 7)
 
     def test_right_arrow_crosses_to_start_of_next_line(self) -> None:
         path = self.directory / "lines.txt"
@@ -480,6 +533,8 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIn("Ctrl-R", editor.help_area.buffer.text)
         self.assertIn("F3", editor.help_area.buffer.text)
         self.assertIn("Alt-Q", editor.help_area.buffer.text)
+        self.assertIn("Alt-Up", editor.help_area.buffer.text)
+        self.assertIn("Alt-Down", editor.help_area.buffer.text)
         self.assertNotIn("Normal-mode editing", editor.help_area.buffer.text)
         self.assertTrue(editor.help_area.buffer.read_only())
 
@@ -500,6 +555,8 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIn("/ / ?", help_text)
         self.assertIn("n / N", help_text)
         self.assertIn("ZZ", help_text)
+        self.assertIn("Alt-Up", help_text)
+        self.assertIn("Alt-Down", help_text)
         for unavailable in (
             "Ctrl-Space",
             "Ctrl-Y",
@@ -1028,6 +1085,12 @@ class PtyIntegrationTests(unittest.TestCase):
                     os.write(master, b":h\r")
                     read_until(b"inedit help (vi mode)")
                     os.write(master, b"\x07\x18")
+                elif action == "runtime_height":
+                    os.write(master, b"\x1b[1;3A")
+                    read_until(b"Height: 7")
+                    os.write(master, b"\x1b[1;3B")
+                    read_until(b"Height: 8")
+                    os.write(master, b"\x18")
                 elif action == "sigint":
                     os.write(master, b"x")
                     read_until(b"| modifi")
@@ -1147,6 +1210,19 @@ class PtyIntegrationTests(unittest.TestCase):
             )
         )
         self.assert_rendering_contract(vi_ex[1], vi_ex[3])
+
+    def test_runtime_height_adjustment_renders_in_a_real_pty(self) -> None:
+        resized = self.run_pty_case(b"original", "runtime_height")
+
+        self.assertEqual(resized[0], 0)
+        self.assertEqual(resized[2], b"original")
+        self.assertTrue(
+            self.terminal_updates_contain(resized[1], b"Height: 7")
+        )
+        self.assertTrue(
+            self.terminal_updates_contain(resized[1], b"Height: 8")
+        )
+        self.assert_rendering_contract(resized[1], resized[3])
 
     def test_editor_breaks_the_line_when_invoked_mid_row(self) -> None:
         """Reproduces git's GIT_EDITOR hint, which ends without a newline."""

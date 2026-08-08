@@ -64,6 +64,7 @@ class EditorState:
     help_visible: bool = False
     exit_prompt: bool = False
     ex_command_visible: bool = False
+    requested_height: int = 20
     effective_height: int = 20
 
     def is_modified(self, current_text: str) -> bool: ...
@@ -89,7 +90,10 @@ claiming to provide file locking.
 
 Compute modified state as `buffer.text != original_text`; do not maintain a
 one-way dirty bit. Undoing all changes must return the buffer to the unmodified
-state.
+state. Keep `requested_height` as the mutable per-session target and
+`effective_height` as the value currently permitted by the terminal. This
+separation lets startup policy, user adjustment, and terminal capping evolve
+independently.
 
 ## Command-line and startup flow
 
@@ -202,12 +206,31 @@ prompt-toolkit otherwise resets every application run to Insert mode.
 
 ### Resize behavior
 
-Before each render, obtain the current output size and update
-`state.effective_height` to `min(configured_height, rows - 1)`. The callable
-container heights let prompt_toolkit apply the new value without replacing the
-buffer. Invalidate the application when the value changes. If a resize leaves
-fewer than five rows, exit the application with an error result; report the
-diagnostic only after prompt_toolkit has restored the terminal.
+Initialize `state.requested_height` from the configured startup height and set
+`state.effective_height` to its initial terminal-capped value. Before each
+render, obtain the current output size and update the effective height to
+`min(state.requested_height, rows - 1)`. The callable container heights let
+prompt_toolkit apply the new value without replacing the buffer. If a resize
+leaves fewer than five rows, exit the application with an error result; report
+the diagnostic only after prompt_toolkit has restored the terminal.
+
+Bind `Alt-Up` and `Alt-Down` as the `(Escape, Up)` and `(Escape, Down)` key
+sequences emitted by common terminals. They reduce or increase the height by
+one row in either editing mode and in transient help, search, and Ex views, but
+not while the exit prompt is waiting for an answer. Clamp adjustments to the
+four-row minimum and `terminal_rows - 1` maximum, show the resulting height as
+a transient status message, and invalidate the application.
+
+Base a deliberate adjustment on `state.effective_height`, because it is the
+height the user can see. When an adjustment actually changes that value, make
+the result the new requested session height. At a boundary, leave the requested
+height alone; this preserves a larger target that may become usable again after
+a terminal resize.
+
+A future content-aware startup policy should compute the initial requested
+height before terminal capping, and only when neither `--height` nor
+`INEDIT_HEIGHT` was supplied explicitly. It should not require changes to the
+runtime adjustment or layout code.
 
 ### Exit display retention
 
@@ -475,7 +498,8 @@ future debug option. No exception handler may attempt an implicit save.
 Use temporary directories for every filesystem test. Unit-test:
 
 - argument and environment height parsing, including `--` filenames;
-- initial and resized height capping;
+- initial and resized height capping, one-row runtime adjustment, and minimum
+  and maximum bounds;
 - UTF-8, UTF-8 BOM, decode errors, and NUL rejection;
 - LF, CRLF, mixed endings, bare CR, empty files, and final-newline retention;
 - existing files, new files, symlinks, dangling symlinks, and rejected types;
@@ -493,9 +517,10 @@ Use temporary directories for every filesystem test. Unit-test:
 
 Use prompt_toolkit pipe input and dummy output for key-binding tests. Send text,
 Enter, selection, native cut/copy/yank, undo/redo, mode-specific help,
-forward/reverse/repeated search, vi Ex commands, `ZZ`, save, prompted exit, and
-cancel as actual input bytes and assert the application result, buffer,
-clipboard, search state, and target bytes.
+forward/reverse/repeated search, vi Ex commands, `ZZ`, `Alt-Up`/`Alt-Down`,
+save, prompted exit, and cancel as actual input bytes and assert the
+application result, buffer, clipboard, search state, height state, and target
+bytes.
 
 Add PTY tests for behavior that dummy output cannot prove:
 
@@ -513,8 +538,9 @@ Add PTY tests for behavior that dummy output cannot prove:
 7. Save, exit, and cancel modified buffers and compare exact bytes and statuses.
 8. Inject a conflict and a save failure while the UI is open; confirm the
    editor remains usable.
-9. Resize the PTY, then send `SIGINT`, `SIGTERM`, and `SIGHUP`; verify cleanup,
-   cursor restoration, and no implicit write.
+9. Adjust the application height in a live PTY, then resize the PTY and send
+   `SIGINT`, `SIGTERM`, and `SIGHUP`; verify repainting, cleanup, cursor
+   restoration, and no implicit write.
 10. For each proposed exit-retention policy, verify the final visible cells and
     the location where the invoking shell can safely draw its next prompt.
 

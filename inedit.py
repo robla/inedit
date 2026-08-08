@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A small, fixed-height inline terminal text editor."""
+"""A small, bounded-height inline terminal text editor."""
 
 from __future__ import annotations
 
@@ -61,6 +61,10 @@ File
   Ctrl-C        Same as Ctrl-X; cancel an active exit prompt
   Ctrl-G        Close this help
 
+Display
+  Alt-Up        Reduce the editor height by one row
+  Alt-Down      Increase the editor height by one row
+
 Clipboard and selection
   Ctrl-Space    Set the mark / start a selection
   Ctrl-W        Cut the region; without one, search forward
@@ -110,6 +114,10 @@ File (all modes)
   Ctrl-S        Save and continue editing
   Ctrl-C        Same as Ctrl-X; cancel an active exit prompt
   Ctrl-G        Close this help
+
+Display (all modes)
+  Alt-Up        Reduce the editor height by one row
+  Alt-Down      Increase the editor height by one row
 
 Modes
   Esc           Return to Normal mode
@@ -246,6 +254,7 @@ class EditorState:
     help_visible: bool = False
     exit_prompt: bool = False
     ex_command_visible: bool = False
+    requested_height: int = DEFAULT_HEIGHT
     effective_height: int = DEFAULT_HEIGHT
 
     def is_modified(self, current_text: str) -> bool:
@@ -294,7 +303,7 @@ def parse_args(
 
     parser = argparse.ArgumentParser(
         prog="inedit.py",
-        description="Edit one UTF-8 file in a fixed-height inline terminal UI.",
+        description="Edit one UTF-8 file in a bounded inline terminal UI.",
         epilog=(
             "Saving atomically replaces the target inode; hard-link identity, "
             "ownership, ACLs, and extended attributes are not preserved."
@@ -304,7 +313,7 @@ def parse_args(
         "--height",
         metavar="ROWS",
         type=_height_value,
-        help="total editor height (default: INEDIT_HEIGHT or 20)",
+        help="initial total editor height (default: INEDIT_HEIGHT or 20)",
     )
     parser.add_argument(
         "--vi",
@@ -614,6 +623,13 @@ def effective_height(configured_height: int, terminal_rows: int) -> int:
     return min(configured_height, terminal_rows - 1)
 
 
+def adjusted_height(current_height: int, delta: int, terminal_rows: int) -> int:
+    """Return a one-session height adjustment within terminal-safe bounds."""
+
+    requested_height = max(MINIMUM_HEIGHT, current_height + delta)
+    return effective_height(requested_height, terminal_rows)
+
+
 def _display_width(text: str) -> int:
     return sum(get_cwidth(character) for character in text)
 
@@ -729,10 +745,14 @@ def build_application(
 ) -> BuiltEditor:
     """Construct the prompt_toolkit application and its mutable editor state."""
 
+    effective_initial_height = (
+        initial_height if initial_height is not None else options.height
+    )
     state = EditorState(
         document=document,
         original_text=document.text,
-        effective_height=initial_height or options.height,
+        requested_height=options.height,
+        effective_height=effective_initial_height,
     )
     search_toolbar = SearchToolbar(vi_mode=options.vi)
     text_area = TextArea(
@@ -890,6 +910,44 @@ def build_application(
         event.app.invalidate()
 
     exit_prompt = Condition(lambda: state.exit_prompt)
+
+    def adjust_editor_height(event: Any, delta: int) -> None:
+        rows = event.app.output.get_size().rows
+        try:
+            new_height = adjusted_height(
+                state.effective_height,
+                delta,
+                rows,
+            )
+        except TerminalError as exc:
+            event.app.exit(result=EditorResult(ExitReason.ERROR, str(exc)))
+            return
+
+        if new_height != state.effective_height:
+            state.requested_height = new_height
+            state.effective_height = new_height
+        state.message = f"Height: {state.effective_height}"
+        event.app.invalidate()
+
+    @bindings.add(
+        "escape",
+        "up",
+        filter=~exit_prompt,
+        eager=True,
+        save_before=lambda _event: False,
+    )
+    def shrink_editor(event: Any) -> None:
+        adjust_editor_height(event, -1)
+
+    @bindings.add(
+        "escape",
+        "down",
+        filter=~exit_prompt,
+        eager=True,
+        save_before=lambda _event: False,
+    )
+    def expand_editor(event: Any) -> None:
+        adjust_editor_height(event, 1)
 
     @bindings.add(
         Keys.Any,
@@ -1187,7 +1245,7 @@ def build_application(
             return
         rows = application.output.get_size().rows
         try:
-            new_height = effective_height(options.height, rows)
+            new_height = effective_height(state.requested_height, rows)
         except TerminalError as exc:
             application.exit(result=EditorResult(ExitReason.ERROR, str(exc)))
             return
