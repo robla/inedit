@@ -492,7 +492,8 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIn("Normal-mode movement", help_text)
         self.assertIn("d/c/y + move", help_text)
         self.assertIn("v / V", help_text)
-        self.assertIn("There is no Ex", help_text)
+        self.assertIn("Ex commands (Normal mode)", help_text)
+        self.assertIn(":wq", help_text)
         for unavailable in (
             "Ctrl-Space",
             "Ctrl-Y",
@@ -503,6 +504,62 @@ class LayoutAndStateTests(unittest.TestCase):
         ):
             self.assertNotIn(unavailable, help_text)
         self.assertTrue(editor.help_area.buffer.read_only())
+
+    def test_vi_ex_write_saves_without_exiting(self) -> None:
+        path = self.directory / "existing.txt"
+        path.write_text("original", encoding="utf-8")
+        result, _editor = self.run_editor(
+            path, "A!\x1b:w\ra?\x1b:wq\r", vi=True
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "original!?")
+
+    def test_vi_ex_quit_exits_only_when_buffer_is_unchanged(self) -> None:
+        clean_path = self.directory / "clean.txt"
+        clean_path.write_text("original", encoding="utf-8")
+        clean_result, _editor = self.run_editor(
+            clean_path, ":q\r", vi=True
+        )
+        self.assertIs(clean_result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(clean_path.read_text(encoding="utf-8"), "original")
+
+        modified_path = self.directory / "modified.txt"
+        modified_path.write_text("original", encoding="utf-8")
+        modified_result, _editor = self.run_editor(
+            modified_path, "A!\x1b:q\r:wq\r", vi=True
+        )
+        self.assertIs(modified_result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(
+            modified_path.read_text(encoding="utf-8"), "original!"
+        )
+
+    def test_vi_ex_help_opens_vi_help(self) -> None:
+        path = self.directory / "existing.txt"
+        path.write_text("original", encoding="utf-8")
+        result, editor = self.run_editor(path, ":h\r\x07\x18", vi=True)
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertIn("inedit help (vi mode)", editor.help_area.buffer.text)
+        self.assertFalse(editor.state.help_visible)
+
+    def test_ctrl_c_cancels_vi_ex_command_without_exiting(self) -> None:
+        path = self.directory / "existing.txt"
+        path.write_text("original", encoding="utf-8")
+        result, editor = self.run_editor(
+            path, ":q\x03A!\x1b:wq\r", vi=True
+        )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "original!")
+        self.assertFalse(editor.state.ex_command_visible)
+
+    def test_colon_remains_insertable_text_in_default_mode(self) -> None:
+        path = self.directory / "new.txt"
+        result, _editor = self.run_editor(path, ":w\x13\x18")
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), ":w")
 
     def test_ctrl_w_cuts_a_region_and_ctrl_y_yanks_it(self) -> None:
         path = self.directory / "region.txt"
@@ -730,7 +787,7 @@ class PtyIntegrationTests(unittest.TestCase):
                 "--height",
                 "8",
             ]
-            if action == "vi_modes":
+            if action in ("vi_modes", "vi_ex"):
                 command.append("--vi")
             command.append(str(path))
             process = subprocess.Popen(
@@ -785,6 +842,11 @@ class PtyIntegrationTests(unittest.TestCase):
                     os.write(master, b"i")
                     read_until(b"INSERT")
                     os.write(master, b"\x18")
+                elif action == "vi_ex":
+                    read_until(b"[NORMAL]")
+                    os.write(master, b":h\r")
+                    read_until(b"inedit help (vi mode)")
+                    os.write(master, b"\x07\x18")
                 elif action == "sigint":
                     os.write(master, b"x")
                     read_until(b"| modifi")
@@ -882,6 +944,18 @@ class PtyIntegrationTests(unittest.TestCase):
             self.terminal_updates_contain(vi_modes[1], b"INSERT")
         )
         self.assert_rendering_contract(vi_modes[1], vi_modes[3])
+
+    def test_vi_ex_help_renders_in_a_real_pty(self) -> None:
+        vi_ex = self.run_pty_case(b"original", "vi_ex")
+
+        self.assertEqual(vi_ex[0], 0)
+        self.assertEqual(vi_ex[2], b"original")
+        self.assertTrue(
+            self.terminal_updates_contain(
+                vi_ex[1], b"inedit help (vi mode)"
+            )
+        )
+        self.assert_rendering_contract(vi_ex[1], vi_ex[3])
 
     def test_editor_breaks_the_line_when_invoked_mid_row(self) -> None:
         """Reproduces git's GIT_EDITOR hint, which ends without a newline."""

@@ -284,7 +284,23 @@ Build the read-only help area from one of two static references. Default mode
 documents the Emacs-oriented bindings, including the custom formatting and
 external-editor commands. Vi mode instead documents prompt-toolkit's supported
 mode changes, motions, operators, Visual selections, and Insert-mode keys. It
-must omit Emacs-only commands and state that Ex commands are unavailable.
+must omit Emacs-only commands and document only the implemented Ex subset.
+
+In vi Normal mode, `:` replaces the status row with a focused, one-line
+prompt-toolkit `TextArea` and temporarily uses vi Insert mode for command-line
+editing. `Escape` or Ctrl-C restores Normal mode without executing. Enter
+trims and dispatches only these commands:
+
+| Command | Required transition |
+|---|---|
+| `w`, `write` | Use the Ctrl-S save path, then return to Normal mode |
+| `q`, `quit` | Exit only if unchanged; otherwise show `No write since last change` |
+| `wq` | Use the save path and exit only after a successful save |
+| `h`, `help` | Open the mode-specific vi help view |
+
+Unknown commands return to Normal mode and show a concise error. Do not parse
+filenames, bang variants, options, command separators, or the broader Ex
+language. Plain `:` remains insertable text in default Emacs mode.
 
 ## Status line
 

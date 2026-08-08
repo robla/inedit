@@ -135,9 +135,17 @@ Insert and Replace modes
   Delete        Delete under the cursor
   Esc           Return to Normal mode
 
+Ex commands (Normal mode)
+  :w            Save and continue editing
+  :q            Exit only when the buffer is unchanged
+  :wq           Save and exit
+  :h            Open this help
+  Esc / Ctrl-C  Cancel the command line
+
 Counts work with Normal-mode commands and operators. Yanks and deletions use
-the one-entry internal clipboard, not the system clipboard. There is no Ex
-command line: use Ctrl-S to save and Ctrl-X or Ctrl-C to exit.
+the one-entry internal clipboard, not the system clipboard. The long forms
+:write, :quit, and :help also work. Filenames, ! variants, options, and other
+Ex syntax are not supported.
 """
 
 
@@ -209,6 +217,7 @@ class EditorState:
     discard_armed: bool = False
     help_visible: bool = False
     exit_prompt: bool = False
+    ex_command_visible: bool = False
     effective_height: int = DEFAULT_HEIGHT
 
     def is_modified(self, current_text: str) -> bool:
@@ -227,6 +236,7 @@ class BuiltEditor:
     state: EditorState
     text_area: TextArea
     help_area: TextArea
+    command_area: TextArea
 
 
 class TerminationRequested(BaseException):
@@ -714,6 +724,14 @@ def build_application(
         line_numbers=False,
         height=lambda: state.effective_height - 1,
     )
+    command_area = TextArea(
+        text="",
+        multiline=False,
+        prompt=":",
+        wrap_lines=False,
+        height=1,
+        style="class:status",
+    )
     application_reference: list[Application[EditorResult]] = []
 
     def invalidate() -> None:
@@ -729,6 +747,15 @@ def build_application(
     text_area.buffer.on_text_changed += buffer_changed
 
     bindings = KeyBindings()
+    ex_command_mode = Condition(lambda: state.ex_command_visible)
+
+    def leave_ex_command(application: Application[EditorResult]) -> None:
+        state.ex_command_visible = False
+        command_area.buffer.text = ""
+        if options.vi:
+            application.vi_state.input_mode = InputMode.NAVIGATION
+        application.layout.focus(text_area)
+        application.invalidate()
 
     def save_buffer(event: Any) -> bool:
         nonlocal current_document
@@ -754,9 +781,13 @@ def build_application(
 
     @bindings.add("c-s", eager=True)
     def save(event: Any) -> None:
+        if state.ex_command_visible:
+            leave_ex_command(event.app)
         save_buffer(event)
 
     def request_exit(event: Any) -> None:
+        if state.ex_command_visible:
+            leave_ex_command(event.app)
         if state.help_visible:
             state.help_visible = False
             event.app.layout.focus(text_area)
@@ -773,7 +804,12 @@ def build_application(
         if not state.exit_prompt:
             request_exit(event)
 
-    @bindings.add("c-c", eager=True, save_before=lambda _event: False)
+    @bindings.add(
+        "c-c",
+        filter=~ex_command_mode,
+        eager=True,
+        save_before=lambda _event: False,
+    )
     def ctrl_c_exit(event: Any) -> None:
         if state.exit_prompt:
             state.exit_prompt = False
@@ -804,6 +840,8 @@ def build_application(
         save_before=lambda _event: False,
     )
     def toggle_help(event: Any) -> None:
+        if state.ex_command_visible:
+            leave_ex_command(event.app)
         state.exit_prompt = False
         state.message = None
         state.help_visible = not state.help_visible
@@ -836,6 +874,69 @@ def build_application(
         and not state.exit_prompt
     )
     arrow_mode = emacs_mode | vi_insert_mode
+    vi_normal_editor = Condition(
+        lambda: options.vi
+        and not state.help_visible
+        and not state.exit_prompt
+        and not state.ex_command_visible
+        and bool(application_reference)
+        and application_reference[0].vi_state.input_mode
+        is InputMode.NAVIGATION
+        and text_area.buffer.selection_state is None
+        and application_reference[0].layout.current_buffer is text_area.buffer
+    )
+
+    @bindings.add(":", filter=vi_normal_editor, eager=True)
+    def open_ex_command(event: Any) -> None:
+        state.ex_command_visible = True
+        command_area.buffer.text = ""
+        event.app.vi_state.input_mode = InputMode.INSERT
+        event.app.layout.focus(command_area)
+        event.app.invalidate()
+
+    @bindings.add(
+        "escape",
+        filter=ex_command_mode,
+        eager=True,
+        save_before=lambda _event: False,
+    )
+    @bindings.add(
+        "c-c",
+        filter=ex_command_mode,
+        eager=True,
+        save_before=lambda _event: False,
+    )
+    def cancel_ex_command(event: Any) -> None:
+        leave_ex_command(event.app)
+
+    @bindings.add(
+        "enter",
+        filter=ex_command_mode,
+        eager=True,
+        save_before=lambda _event: False,
+    )
+    def accept_ex_command(event: Any) -> None:
+        command = command_area.buffer.text.strip()
+        leave_ex_command(event.app)
+        if command in ("w", "write"):
+            save_buffer(event)
+        elif command in ("q", "quit"):
+            if state.is_modified(text_area.buffer.text):
+                state.message = "No write since last change"
+                event.app.invalidate()
+            else:
+                event.app.exit(result=EditorResult(ExitReason.SAVED))
+        elif command == "wq":
+            if save_buffer(event):
+                event.app.exit(result=EditorResult(ExitReason.SAVED))
+        elif command in ("h", "help"):
+            state.help_visible = True
+            help_area.buffer.cursor_position = 0
+            event.app.layout.focus(help_area)
+            event.app.invalidate()
+        elif command:
+            state.message = f"Not an editor command: {command}"
+            event.app.invalidate()
 
     def move_by_character(event: Any, count: int) -> None:
         buffer = event.current_buffer
@@ -979,7 +1080,11 @@ def build_application(
             DynamicContainer(
                 lambda: help_area if state.help_visible else text_area
             ),
-            status_window,
+            DynamicContainer(
+                lambda: command_area
+                if state.ex_command_visible
+                else status_window
+            ),
         ],
         height=lambda: state.effective_height,
     )
@@ -1019,7 +1124,7 @@ def build_application(
 
     initialize_vi_mode(application)
     application_reference.append(application)
-    return BuiltEditor(application, state, text_area, help_area)
+    return BuiltEditor(application, state, text_area, help_area, command_area)
 
 
 def _signal_name(signum: int) -> str:

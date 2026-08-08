@@ -192,8 +192,9 @@ See [README.md](README.md) for the complete current key reference.
 In `--vi` mode, prompt_toolkit owns vi insert/normal navigation, the editor
 starts in Normal mode, and the status line shows `[NORMAL]`, `[INSERT]`,
 `[REPLACE]`, or `[VISUAL]`. `Escape` returns to Normal mode. `Ctrl-S`,
-`Ctrl-X`, and `Ctrl-C` retain their global meanings. Version 1 does not
-implement Ex commands such as `:wq`.
+`Ctrl-X`, and `Ctrl-C` retain their global meanings. A limited Ex command line
+implements `:w`, `:q`, `:wq`, and `:h` (plus the applicable long forms).
+It does not accept filenames, `!` variants, options, or arbitrary Ex commands.
 
 On the main screen, `Ctrl-C` follows the same clean-or-prompted exit path as
 `Ctrl-X`. Within the prompt, `Ctrl-C` returns to editing.
@@ -334,7 +335,8 @@ spaces and long paths requiring horizontal scrolling.
 ## Continuing non-goals
 
 - Multiple files, tabs, split views, syntax highlighting, or plugins.
-- Search and replace, macros, or an Ex command line.
+- Search and replace, macros, or Ex commands beyond the small
+  `:w`/`:q`/`:wq`/`:h` set.
 - Mouse selection. System-clipboard integration is now a near-term roadmap
   item, but must remain optional and terminal-safe.
 - Arbitrary encodings or binary-file editing.

@@ -130,8 +130,21 @@ With `--vi`, the editor starts in Normal mode. The status line displays
 `[NORMAL]`, `[INSERT]`, `[REPLACE]`, or `[VISUAL]` as the active mode changes.
 Use normal vi commands such as `i` or `a` to begin inserting text; `Escape`
 returns to Normal mode. `Ctrl-S` keeps its global save meaning, while `Ctrl-X`
-and `Ctrl-C` remain equivalent global exit commands. Version 1 has no Ex
-command line, so commands such as `:wq` are not available.
+and `Ctrl-C` remain equivalent global exit commands.
+
+Normal mode also has a deliberately small Ex command line:
+
+| Command | Action |
+|---|---|
+| `:w` | Save and return to Normal mode |
+| `:q` | Exit if the buffer is unchanged; otherwise report an error |
+| `:wq` | Save and exit |
+| `:h` | Open the vi-mode help screen |
+
+The long forms `:write`, `:quit`, and `:help` also work. Press `Escape` or
+`Ctrl-C` to cancel command entry. Filenames, `!` variants, command options,
+and other Ex commands are not supported. Use `Ctrl-X` when you want the
+interactive save/discard prompt instead of vi-style `:q` behavior.
 
 ## File and save behavior
 
