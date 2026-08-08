@@ -6,7 +6,8 @@ The first version of `inedit.py` is implemented as a minimal text editor for
 short-lived files such as Git commit messages. Its defining behavior is a
 bounded-height editor rendered below the shell prompt without switching to the
 terminal's alternate screen. `Alt-Up` and `Alt-Down` adjust that height during
-the current session.
+the current session; their `Height: N` feedback clears one second after the
+most recent adjustment.
 
 The implementation uses **prompt_toolkit**, not raw terminal escape sequences,
 and targets prompt-toolkit `>=3.0.36,<4`. That baseline provides a multiline

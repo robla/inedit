@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import codecs
 import os
 import re
@@ -51,6 +52,7 @@ from prompt_toolkit.widgets import SearchToolbar, TextArea
 
 DEFAULT_HEIGHT = 20
 MINIMUM_HEIGHT = 4
+HEIGHT_MESSAGE_SECONDS = 1.0
 SIGNAL_DISCARD_MESSAGE = "Unsaved changes; interrupt again to discard"
 EXIT_PROMPT = "Save modified buffer? Y Yes | N No | ^C Cancel"
 EMACS_HELP_TEXT = """inedit help (Emacs mode)
@@ -799,6 +801,7 @@ def build_application(
 
     bindings = KeyBindings()
     ex_command_mode = Condition(lambda: state.ex_command_visible)
+    height_message_generation = 0
 
     def leave_ex_command(application: Application[EditorResult]) -> None:
         state.ex_command_visible = False
@@ -912,6 +915,8 @@ def build_application(
     exit_prompt = Condition(lambda: state.exit_prompt)
 
     def adjust_editor_height(event: Any, delta: int) -> None:
+        nonlocal height_message_generation
+
         rows = event.app.output.get_size().rows
         try:
             new_height = adjusted_height(
@@ -926,8 +931,22 @@ def build_application(
         if new_height != state.effective_height:
             state.requested_height = new_height
             state.effective_height = new_height
-        state.message = f"Height: {state.effective_height}"
+        message = f"Height: {state.effective_height}"
+        state.message = message
+        height_message_generation += 1
+        generation = height_message_generation
         event.app.invalidate()
+
+        async def clear_height_message() -> None:
+            await asyncio.sleep(HEIGHT_MESSAGE_SECONDS)
+            if (
+                generation == height_message_generation
+                and state.message == message
+            ):
+                state.message = None
+                event.app.invalidate()
+
+        event.app.create_background_task(clear_height_message())
 
     @bindings.add(
         "escape",

@@ -77,6 +77,11 @@ by one row. These commands work in both editing modes and in the help, search,
 and vi Ex views. Each adjustment lasts for the current invocation only; it does
 not change `INEDIT_HEIGHT` in the parent shell.
 
+The resulting `Height: N` message appears in the ordinary status line for
+about one second after the most recent adjustment. Repeated adjustments restart
+that interval. Afterward, the filename and normal status information return;
+the timer never clears a newer save, warning, or error message.
+
 The minimum total height is four rows, including the one-row footer. Expansion
 stops with one terminal row still outside the application. When a terminal
 resize temporarily limits the editor, it can return to its requested session

@@ -379,6 +379,121 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertEqual(editor.state.effective_height, 7)
         self.assertEqual(editor.state.message, "Height: 7")
 
+    def test_height_message_expires_after_last_adjustment(self) -> None:
+        import asyncio
+
+        path = self.directory / "new.txt"
+        document = inedit.load_document(path)
+        observations: list[str | None] = []
+        with create_pipe_input() as pipe:
+            editor = inedit.build_application(
+                document,
+                self.options(path),
+                input=pipe,
+                output=DummyOutput(),
+            )
+
+            async def adjust_again_and_finish() -> None:
+                for _ in range(1000):
+                    if editor.state.message == "Height: 7":
+                        break
+                    await asyncio.sleep(0.001)
+                else:
+                    editor.application.exit(
+                        result=inedit.EditorResult(
+                            inedit.ExitReason.ERROR,
+                            "initial height message was not displayed",
+                        )
+                    )
+                    return
+                pipe.send_text("\x1b[1;3B")
+                for _ in range(1000):
+                    if editor.state.message == "Height: 8":
+                        break
+                    await asyncio.sleep(0.001)
+                else:
+                    editor.application.exit(
+                        result=inedit.EditorResult(
+                            inedit.ExitReason.ERROR,
+                            "second height message was not displayed",
+                        )
+                    )
+                    return
+                await asyncio.sleep(0.04)
+                observations.append(editor.state.message)
+                await asyncio.sleep(0.06)
+                observations.append(editor.state.message)
+                editor.application.exit(
+                    result=inedit.EditorResult(inedit.ExitReason.SAVED)
+                )
+
+            def schedule_actions() -> None:
+                editor.application.create_background_task(
+                    adjust_again_and_finish()
+                )
+
+            pipe.send_text("\x1b[1;3A")
+            with mock.patch("inedit.HEIGHT_MESSAGE_SECONDS", 0.08):
+                result = editor.application.run(
+                    pre_run=schedule_actions,
+                    set_exception_handler=False,
+                )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(observations, ["Height: 8", None])
+        self.assertIsNone(editor.state.message)
+
+    def test_height_timer_does_not_clear_a_later_status_message(self) -> None:
+        import asyncio
+
+        path = self.directory / "new.txt"
+        document = inedit.load_document(path)
+        observations: list[str | None] = []
+        with create_pipe_input() as pipe:
+            editor = inedit.build_application(
+                document,
+                self.options(path),
+                input=pipe,
+                output=DummyOutput(),
+            )
+
+            async def replace_message_and_finish() -> None:
+                for _ in range(1000):
+                    if editor.state.message == "Height: 7":
+                        break
+                    await asyncio.sleep(0.001)
+                else:
+                    editor.application.exit(
+                        result=inedit.EditorResult(
+                            inedit.ExitReason.ERROR,
+                            "height message was not displayed",
+                        )
+                    )
+                    return
+                editor.state.message = "Later message"
+                editor.application.invalidate()
+                await asyncio.sleep(0.07)
+                observations.append(editor.state.message)
+                editor.application.exit(
+                    result=inedit.EditorResult(inedit.ExitReason.SAVED)
+                )
+
+            def schedule_actions() -> None:
+                editor.application.create_background_task(
+                    replace_message_and_finish()
+                )
+
+            pipe.send_text("\x1b[1;3A")
+            with mock.patch("inedit.HEIGHT_MESSAGE_SECONDS", 0.05):
+                result = editor.application.run(
+                    pre_run=schedule_actions,
+                    set_exception_handler=False,
+                )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(observations, ["Later message"])
+        self.assertEqual(editor.state.message, "Later message")
+
     def test_runtime_height_adjustment_works_in_vi_normal_mode(self) -> None:
         path = self.directory / "new.txt"
         result, editor = self.run_editor(

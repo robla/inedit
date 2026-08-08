@@ -219,7 +219,11 @@ sequences emitted by common terminals. They reduce or increase the height by
 one row in either editing mode and in transient help, search, and Ex views, but
 not while the exit prompt is waiting for an answer. Clamp adjustments to the
 four-row minimum and `terminal_rows - 1` maximum, show the resulting height as
-a transient status message, and invalidate the application.
+a transient status message, and invalidate the application. Keep the height
+message visible for one second after the most recent adjustment. Implement
+this as a debounced prompt-toolkit background task: an older timer must not
+clear a newer height message, and a height timer must not clear a subsequent
+save, warning, or error message.
 
 Base a deliberate adjustment on `state.effective_height`, because it is the
 height the user can see. When an adjustment actually changes that value, make
