@@ -1,0 +1,386 @@
+#+TITLE: inedit tasks
+#+TODO: TODO | DONE
+
+* Tasks
+** TODO [#A] t0001 Harden the save transaction before wider promotion  :safety:filesystem:
+The current transaction is a strong prototype for small, user-owned files, but
+its confidentiality, empty-file, metadata, concurrency, and crash-durability
+semantics need to be explicit and tested before =inedit= is described as a
+generally safe =$EDITOR=.
+
+*** TODO [#A] t0001.1 Keep temporary save files private from creation through replacement
+Rationale: =_create_temporary_sibling()= currently creates a sibling with mode
+=0666= subject to the umask, writes the new contents, and only then applies the
+target's mode. Under a common =022= umask, a private =0600= file therefore has
+a briefly =0644= temporary copy that another local user could discover by
+watching a searchable directory.
+
+Completion criteria:
+- Create the sibling with private permissions before any document bytes are
+  written.
+- Apply the intended final mode only after the complete content is in place.
+- Cover existing private files, new files, permissive files, default ACLs when
+  practical, and a =022= umask in tests.
+
+*** TODO [#A] t0001.2 Define safe handling for stale save siblings after a crash
+Rationale: normal exceptions unlink the exact temporary sibling, but =SIGKILL=,
+power loss, or interpreter failure can leave =.inedit-*.tmp= behind. Private
+creation makes such remnants less dangerous, but users still need a deliberate
+cleanup or recovery policy that never deletes an unrelated file.
+
+Completion criteria:
+- Ensure every stale sibling is private even if the process dies at any save
+  step.
+- Decide whether startup reports, recovers, or leaves stale siblings alone.
+- Document the policy and test that cleanup cannot target anything except a
+  validated =inedit= sibling.
+
+*** TODO [#A] t0001.3 Make an explicit save create a new empty file
+Rationale: a nonexistent target and its initial empty buffer compare as
+unchanged, so =Ctrl-S= and =:w= currently say "No changes" without creating the
+file. This contradicts ordinary editor save semantics.
+
+Completion criteria:
+- =Ctrl-S= and vi =:w= create a zero-byte file when the target did not exist.
+- Define and test whether an unchanged exit or =ZZ= should create it.
+- Preserve the rule that merely opening and canceling a new buffer does not
+  create a file.
+
+*** TODO [#A] t0001.4 Specify and implement the intended crash-durability guarantee
+Rationale: the temporary file is =fsync()=ed before =os.replace()=, which gives
+atomic visibility, but the containing directory is not synced. A power loss can
+therefore lose the replacement even after the editor reported success on some
+filesystems.
+
+Completion criteria:
+- Distinguish atomic visibility from power-loss durability in documentation.
+- If durability is promised, sync the appropriate directory after replacement
+  and define how a post-replacement sync failure is reported without falsely
+  claiming that the old target remains.
+- Add focused tests or platform-conditional probes for the chosen policy.
+
+*** TODO [#A] t0001.5 Choose a defensible metadata and hard-link policy
+Rationale: atomic inode replacement preserves permission bits but can change
+ownership or group, break hard links, and lose ACLs, extended attributes,
+SELinux labels, and filesystem-specific metadata. This is acceptable for Git
+commit-message files but can be unsafe for general configuration editing.
+
+Completion criteria:
+- Decide which metadata is preserved, rejected, or explicitly unsupported.
+- Either preserve important metadata safely or refuse risky targets rather
+  than silently degrading them.
+- Test the supported behavior and keep the limitation prominent in the root
+  README and command help.
+
+*** TODO [#A] t0001.6 Make conflict-detection claims match the actual guarantee
+Rationale: device, inode, size, and =mtime_ns= catch common external changes,
+but can miss same-size changes with a restored timestamp, and another writer
+can still race between the final check and =os.replace()=.
+
+Completion criteria:
+- Decide whether to add an original-content digest or another stronger check.
+- Keep the unavoidable final race and lack of cooperative locking explicit.
+- Replace categorical claims such as "any external change is refused" with
+  wording the implementation can actually guarantee.
+- Test deliberately preserved size/timestamp cases if stronger detection is
+  implemented.
+
+*** TODO [#A] t0001.7 Expand save failure-injection coverage
+Rationale: the existing suite exercises replacement failure, but the design
+also relies on write loops, =fchmod()=, file =fsync()=, close, cleanup, and any
+future directory sync. A high test count should not conceal untested transaction
+boundaries.
+
+Completion criteria:
+- Inject short or failed writes, permission-setting failure, file and directory
+  sync failure, close failure where meaningful, and cleanup failure.
+- Assert whether the old target, new target, and exact temporary sibling exist
+  after every failure point.
+- Verify that a failure after a successful replacement is never misreported as
+  though the old bytes were preserved.
+
+** TODO [#A] t0002 Harden terminal startup, shutdown, and caller interoperability  :terminal:
+Prompt-toolkit restores the terminal well once the application is running, but
+the custom pre-run cursor probe, retained final display, redirected I/O, and
+terminal diversity require their own explicit contract.
+
+*** TODO [#A] t0002.1 Redesign the pre-render cursor-column guard
+Rationale: the guard temporarily disables canonical input and echo, consumes
+all bytes read while searching for a cursor-position response, and installs
+termination handlers only afterward. Early typeahead can disappear, and a
+termination signal can land in a terminal-mode restoration gap.
+
+Completion criteria:
+- Preserve and replay non-CPR input bytes instead of discarding them.
+- Ensure =SIGINT=, =SIGTERM=, =SIGHUP=, exceptions, and restoration failures
+  cannot leave terminal attributes changed during startup.
+- Keep unsupported-CPR behavior fast, conservative, and documented.
+- Add PTY tests for prefixed/suffixed typeahead, timeout, malformed responses,
+  and signals at each startup phase.
+
+*** TODO [#A] t0002.2 Resolve Git's unterminated waiting hint without erasing unrelated output
+Rationale: the current safe newline keeps Git's
+"Waiting for your editor" hint above the now-retained viewport. Automatically
+erasing any mid-row caller text could instead destroy a legitimate message.
+
+Completion criteria:
+- Prefer documenting =git config --global advice.waitingForEditor false= as the
+  no-risk Git-specific solution.
+- If =inedit= gains current-line reclamation, make the policy explicit and
+  conservative rather than matching English text, filenames, or cursor widths.
+- Test both Git's behavior and a non-Git caller with meaningful unterminated
+  output.
+
+*** TODO [#A] t0002.3 Reconstruct final PTY screens instead of matching output fragments
+Rationale: the current matcher proves that text appeared somewhere in a VT
+update stream but does not prove the exact final cells, scrolling position,
+line numbers, style, or next-shell-prompt position.
+
+Completion criteria:
+- Use a small terminal emulator or equivalent screen model in PTY tests.
+- Assert the full final viewport after save, unchanged exit, discard, help,
+  search, vi Ex input, vertical/horizontal scrolling, and resizing.
+- Verify the result row is not inverted and the next caller prompt begins below
+  the retained region without changing the sentinel above it.
+
+*** TODO [#A] t0002.4 Expand live terminal and signal coverage
+Rationale: current PTY tests cover an 80x24 POSIX PTY, =SIGINT=, and =SIGTERM=,
+but not =SIGHUP=, an actual resize during the application, narrow widths,
+scrolling, or a useful terminal matrix.
+
+Completion criteria:
+- Add live =TIOCSWINSZ= resize tests, =SIGHUP=, narrow and short terminals,
+  long lines, combining characters, emoji, and filenames with unusual Unicode.
+- Exercise at least representative xterm-compatible terminals and terminal
+  multiplexers in documented manual or automated checks.
+- State clearly which platforms and terminal classes are supported.
+
+*** TODO [#B] t0002.5 Decide whether to use the controlling terminal when standard streams are redirected
+Rationale: requiring both stdin and stdout to be TTYs excludes legitimate
+=$EDITOR= calls where the caller's stdout is piped but =/dev/tty= remains
+available. Silently switching devices also has security and portability costs.
+
+Completion criteria:
+- Decide whether strict TTY streams remain the contract or whether POSIX
+  controlling-terminal fallback is supported.
+- Test redirected stdin, stdout, and stderr independently.
+- Document behavior for =TERM=dumb=, SSH, containers, and non-POSIX systems.
+
+*** TODO [#B] t0002.6 Revisit retained-output privacy and configurability
+Rationale: the retained viewport is useful history, but discarded or sensitive
+buffer text remains in terminal scrollback. A summary does not remove that
+privacy consequence.
+
+Completion criteria:
+- Decide whether the default remains retained for controlled exits.
+- Add an explicit erase-on-exit option only if real privacy-sensitive or
+  scripted workflows justify both behaviors.
+- Test and document the policy for every exit reason.
+
+** TODO [#A] t0003 Make the repository legally and operationally distributable  :release:
+Promotion should not require users to copy an unlicensed script and infer its
+dependency, Python version, supported platform, and update process from design
+notes.
+
+*** TODO [#A] t0003.1 Choose and add an open-source license
+Rationale: without a license, others generally lack permission to redistribute,
+package, or modify the project even if the source is publicly visible.
+
+Completion criteria:
+- Add a root =LICENSE= chosen by the copyright holder.
+- Add copyright and license references where distribution tooling expects them.
+
+*** TODO [#A] t0003.2 Add a root README aimed at prospective users and reviewers
+Rationale: =docs/README.md= is thorough, but common repository hosts will not
+use it as the project landing page. Public users need installation, scope,
+safety limitations, screenshots or examples, and support status up front.
+
+Completion criteria:
+- Lead with Git commit-message editing and the bounded inline behavior.
+- State that the supported scope is small, user-owned UTF-8 files on named
+  platforms and terminals.
+- Link the full user guide, roadmap, task list, license, and known metadata,
+  concurrency, recovery, and scrollback limitations.
+
+*** TODO [#A] t0003.3 Add reproducible package and dependency metadata
+Rationale: the shebang assumes a Python containing prompt-toolkit; when it is
+missing, users get an import traceback. The documented
+=prompt_toolkit>=3.0.36,<4= and implicit Python 3.10+ requirement are not
+enforced.
+
+Completion criteria:
+- Add project metadata with a declared Python floor and prompt-toolkit range.
+- Provide an installable =inedit= entry point while retaining script use if
+  desired.
+- Make missing or incompatible dependencies an installation error or a concise
+  startup diagnostic rather than an unexplained traceback.
+
+*** TODO [#B] t0003.4 Establish versions, releases, and a change record
+Rationale: wider use needs a way to report the exact behavior under test and to
+understand compatibility-affecting changes.
+
+Completion criteria:
+- Define a version source, release tags, and a concise changelog or release-note
+  process.
+- Include the version in =--version= and useful bug reports.
+
+*** TODO [#A] t0003.5 Add continuous integration across the supported matrix
+Rationale: all 107 tests and Ruff pass locally, but only Python 3.11.2 with
+prompt-toolkit 3.0.36 on one POSIX environment has been demonstrated.
+
+Completion criteria:
+- Run unit tests, PTY tests where supported, Ruff, and a type checker in CI.
+- Cover the minimum and newest supported Python and prompt-toolkit versions.
+- Include Linux and any other platform the README claims to support; mark
+  genuinely unsupported jobs and features explicitly rather than silently
+  skipping confidence-critical behavior.
+
+*** TODO [#B] t0003.6 Add a real disposable-Git integration test
+Rationale: the PTY test imitates Git's hint, but does not run a complete
+=git commit= editor flow or observe Git's cleanup and exit-status handling.
+
+Completion criteria:
+- Create a disposable repository, stage a change, invoke =inedit= through
+  =GIT_EDITOR=, and cover save, unchanged, and discard outcomes.
+- Verify the committed message, Git's response to status 130, retained output,
+  and behavior with =advice.waitingForEditor= enabled and disabled.
+
+** TODO [#B] t0004 Make external-editor handoff fail safely  :external_editor:
+=Alt-V= and =:external= are useful escape hatches, but malformed editor
+configuration or a temp-file problem should become a status message, not an
+asyncio traceback interleaved with the terminal UI.
+
+*** TODO [#B] t0004.1 Validate and report =$VISUAL= and =$EDITOR= command errors
+Rationale: malformed shell quoting, a whitespace-only command, or non-launch
+errors are not all covered by the current =OSError= handler.
+
+Completion criteria:
+- Catch command parsing and process-launch failures and keep =inedit= usable.
+- Display a one-line actionable error without leaking a background-task
+  traceback into the viewport.
+- Test malformed quoting, empty commands, missing executables, and signals.
+
+*** TODO [#B] t0004.2 Handle external temporary-file read and cleanup failures
+Rationale: an external editor can delete, replace, make unreadable, or turn the
+temporary pathname into an unexpected file type. Read and unlink failures can
+currently escape the task.
+
+Completion criteria:
+- Validate that the returned object is an acceptable regular file before
+  reading it.
+- Convert read, decode, and cleanup problems into explicit UI outcomes.
+- Preserve the pre-handoff buffer unless a complete valid replacement was
+  obtained.
+
+*** TODO [#B] t0004.3 Define blocking, cursor, and undo semantics for external edits
+Rationale: GUI commands that return before the edit completes cause =inedit= to
+read the temporary file too early, and applying a replacement currently resets
+the cursor without a clearly documented undo contract.
+
+Completion criteria:
+- Document that graphical editors require their wait/block option and provide
+  representative examples.
+- Decide whether an applied external edit is one undo step and where the cursor
+  should land.
+- Test success, nonzero exit, delayed/blocking editors, and termination during
+  handoff.
+
+** TODO [#B] t0005 Make the supported scope explicit and enforce resource bounds  :scope:
+Several limitations are good version-one choices, but they become legitimate
+criticism if promotion implies a universal Nano, vi, or general-purpose editor.
+
+*** TODO [#B] t0005.1 Set and enforce a small-file resource policy
+Rationale: =inedit= reads, decodes, renders, copies, and synchronously rewrites
+the whole file with no size or line-length bound. Large input can consume
+substantial memory or freeze the event loop.
+
+Completion criteria:
+- Benchmark representative file sizes and long lines.
+- Choose a documented warning or refusal threshold, with an override only if it
+  can remain safe.
+- Test that oversized input fails before entering a fragile UI or allocating
+  unreasonable memory.
+
+*** TODO [#B] t0005.2 Publish a precise compatibility statement
+Rationale: the honest current identity is a prompt-toolkit-based inline editor,
+not complete Nano, Emacs, or vi compatibility.
+
+Completion criteria:
+- Describe default mode as prompt-toolkit Emacs-style editing with Nano-inspired
+  application controls.
+- Describe =--vi= as prompt-toolkit vi mode plus the documented small Ex subset.
+- Keep UTF-8-only regular files, no binary editing, no recovery file, no locking,
+  and the one-entry internal clipboard visible as scope rather than surprises.
+
+*** TODO [#C] t0005.3 Implement search and replace after release blockers
+Rationale: search exists, and replacement is the largest ordinary editing gap,
+but it should not displace save confidentiality, packaging, or terminal safety.
+
+Completion criteria:
+- Follow the literal/regex, default-mode key, vi substitution, footer-state,
+  wraparound, and undo decisions in =docs/roadmap.md=.
+- Cover replace, skip, all, cancel, no-match, Unicode, and undo grouping.
+
+*** TODO [#C] t0005.4 Investigate optional system-clipboard integration after hardening
+Rationale: a one-entry internal clipboard is reliable everywhere, while desktop
+clipboard commands and OSC 52 introduce platform, dependency, privacy, and
+remote-session concerns.
+
+Completion criteria:
+- Keep terminal-native paste and internal cut/copy/yank working without optional
+  dependencies.
+- Define explicit opt-in behavior and safe fallbacks for supported platforms.
+- Never silently transmit copied text through a terminal protocol.
+
+** TODO [#B] t0006 Reduce maintenance risk and specification drift  :maintenance:
+The implementation is readable in small pieces, but a large closure-heavy
+=build_application()= and separately maintained key/help/documentation tables
+make future behavior harder to review than the test count suggests.
+
+*** TODO [#B] t0006.1 Split application state transitions from widget construction
+Rationale: save, exit, search, height, vi Ex, external-editor, and final-render
+logic currently share one large closure with =EditorState=, a nonlocal document,
+prompt-toolkit state, and several boolean modes.
+
+Completion criteria:
+- Introduce an explicit controller or small transition helpers without
+  reimplementing prompt-toolkit's editing engine.
+- Represent mutually exclusive footer/modal states so impossible combinations
+  are difficult to construct.
+- Preserve focused tests around each transition and keep application assembly
+  locally reviewable.
+
+*** TODO [#B] t0006.2 Make the implemented keymap the source for help and documentation
+Rationale: two help constants, actual bindings, README tables, and roadmap
+tables can drift independently and overstate mode-specific support.
+
+Completion criteria:
+- Define concise command metadata once where practical.
+- Generate or validate mode-specific help and documentation tables from it.
+- Retain explicit tests that vi help omits unavailable Emacs commands.
+
+*** TODO [#B] t0006.3 Add static typing and audit prompt-toolkit API dependencies
+Rationale: pervasive =Any= event types and calls into lower-level search-binding
+objects make compatibility across the claimed prompt-toolkit range difficult to
+assess.
+
+Completion criteria:
+- Add a type checker with useful coverage of data, controller, and filesystem
+  boundaries.
+- Inventory prompt-toolkit APIs used directly and distinguish documented APIs
+  from compatibility-sensitive internals.
+- Test the declared minimum and latest supported dependency rather than assuming
+  every 3.x release behaves like 3.0.36.
+
+*** TODO [#B] t0006.4 Add property and adversarial tests for parsers and terminal text
+Rationale: example tests cover normal UTF-8, newline, and filename cases well,
+but generated cases are better at exposing Unicode, decoding, truncation, and
+state-machine boundaries.
+
+Completion criteria:
+- Add generated tests for UTF-8/BOM/newline round trips, path display,
+  grapheme-width truncation, and edit/undo/save sequences.
+- Include unusual control characters and filenames while proving that
+  prompt-toolkit renders them visibly rather than emitting terminal control
+  effects.
+- Keep generated filesystem operations confined to temporary directories.

@@ -28,7 +28,111 @@ continue to enforce it.
 and buffer primitives, while this program defines the file lifecycle, layout,
 key bindings, save policy, and cancellation behavior.
 
-## Near-term priorities
+The current implementation is a well-tested prototype for small Git messages
+and other user-owned UTF-8 files on the tested POSIX terminal. It should not yet
+be promoted as a hardened general replacement for `$EDITOR`. The actionable
+release work, rationale, priorities, and completion criteria live in
+[tasks.org](../tasks.org); the sections below summarize the design consequences
+that belong in the roadmap.
+
+## Promotion readiness
+
+### Save confidentiality and correctness
+
+The save transaction needs two correctness fixes before broader promotion.
+First, its temporary sibling is currently created with mode `0666` subject to
+the umask, receives the document bytes, and only afterward receives the old
+file's permission bits. With a common `022` umask this can briefly expose a
+private file through a mode-`0644` sibling in a directory another local user can
+watch. Every temporary copy must be private before any content is written, and
+it must remain private if a crash leaves it behind.
+
+Second, an explicit save of a new empty buffer does not create the file because
+the buffer compares equal to its initial empty text. `Ctrl-S` and vi `:w`
+should create a zero-byte target; merely opening and canceling it should not.
+The behavior of unchanged exit and `ZZ` on a new empty target needs an explicit
+decision and tests.
+
+The project must also decide what “safe save” promises beyond those fixes:
+
+- `fsync()` of the temporary file gives atomic visibility after
+  `os.replace()`, but full power-loss durability generally requires syncing the
+  containing directory and carefully reporting a failure after replacement;
+- inode replacement preserves permission bits but can change ownership or
+  group, break hard links, and lose ACLs, extended attributes, security labels,
+  and filesystem-specific metadata; and
+- device, inode, size, and `mtime_ns` detect common conflicts, but not a
+  same-size in-place change with a restored timestamp, nor another writer in
+  the final check/replace race window.
+
+Either preserve important metadata and strengthen detection where practical,
+or keep the supported target class narrow and reject or prominently document
+risky cases. Avoid categorical claims that every external modification is
+detected. Expand failure injection across writes, permission changes, file and
+directory sync, close, replacement, and cleanup.
+
+### Terminal lifecycle and interoperability
+
+Prompt-toolkit owns the main raw-mode lifecycle, but the custom cursor-column
+guard runs before those protections. It temporarily changes terminal modes and
+reads stdin directly, can discard early typeahead while extracting a CPR
+response, and installs `SIGTERM`/`SIGHUP` restoration handling only afterward.
+Redesign it so unrelated input is replayed and no startup signal can leave the
+terminal altered. CPR timeout and malformed-response behavior should remain
+conservative and quick.
+
+The guard's newline prevents Git's unterminated “Waiting for your editor” hint
+from corrupting the first editor row, but now leaves that hint in scrollback.
+Documenting `git config --global advice.waitingForEditor false` is safer than
+automatically erasing arbitrary caller output. Any future current-line
+reclamation must be explicit and tested with both Git and a caller whose
+unterminated text is meaningful.
+
+The current PTY matcher proves that expected text appeared in terminal update
+streams; it does not reconstruct the final screen. Promotion-quality coverage
+should assert complete cells, scrolling position, line numbers, styling, and
+the next shell prompt after save, unchanged exit, discard, help, search, vi Ex
+input, resizing, and horizontal or vertical scrolling. Add live `SIGHUP`, CPR
+failure, narrow-terminal, Unicode, and terminal/multiplexer coverage. Decide
+whether strict TTY stdin/stdout remains the contract or whether a POSIX
+controlling-terminal fallback is supported when standard streams are
+redirected.
+
+Retained output remains the preferred default, but it leaves discarded and
+possibly sensitive text in scrollback. Keep that consequence prominent and add
+an erase-on-exit option only if real privacy-sensitive or scripted workflows
+demonstrate a need for both policies.
+
+### Distribution and supported scope
+
+Before inviting redistribution, add a license selected by the copyright holder,
+a root user-facing README, reproducible Python and prompt-toolkit dependency
+metadata, an installable `inedit` entry point, a version command, release notes,
+and CI. CI should exercise the minimum and newest supported Python and
+prompt-toolkit versions, claimed operating systems, static checks, and PTY tests
+where available. A disposable real-Git test should cover saved, unchanged, and
+discarded commit-message flows rather than only imitating Git's hint.
+
+Market the program according to the behavior it can defend: a bounded inline
+editor for small, user-owned UTF-8 files, especially Git commit messages. The
+default keymap is prompt-toolkit's Emacs-style editing plus Nano-inspired
+application controls; `--vi` is prompt-toolkit vi mode plus a deliberately
+small Ex subset, not complete vi compatibility. Benchmark and enforce a
+reasonable small-file policy because loading, rendering, and saving currently
+operate on the entire document synchronously.
+
+External-editor handoff also needs hardened parsing, launch, returned-file, and
+cleanup errors so a malformed `$VISUAL`/`$EDITOR` cannot emit an asyncio
+traceback into the live UI. Document graphical editors' wait options and define
+cursor and undo behavior for a successful returned edit.
+
+Finally, reduce maintenance risk by separating application transitions from
+widget construction, validating help and documentation from one intentional
+key registry, adding useful static typing, auditing prompt-toolkit API use, and
+adding property/adversarial tests for encoding, Unicode display, paths, and
+edit/save state transitions.
+
+## Product roadmap after release blockers
 
 ### 1. Add search and replace
 
@@ -292,7 +396,10 @@ line. The user can correct the problem, retry, or cancel.
 ## File behavior
 
 - An existing regular file is loaded. A nonexistent file starts with an empty
-  buffer and is created only after save.
+  buffer and is created only after a successful save. The current UI has a
+  known gap: an explicit save of an initially empty new buffer does not create
+  the zero-byte target because it compares as unchanged; this is a release
+  blocker in [tasks.org](../tasks.org).
 - Directories and other unsupported file types are rejected before terminal
   setup.
 - Version 1 supports UTF-8 text, with or without a UTF-8 BOM, and rejects NUL
@@ -303,19 +410,22 @@ line. The user can correct the problem, retry, or cancel.
 - The presence or absence of a final newline is part of the editable content.
 - Symlinks are followed so saving does not replace the symlink itself.
 
-Saving should be atomic: encode the complete new content first, write it to a
-temporary sibling, flush and `fsync` it, preserve the original permission bits
-when applicable, then replace the target with `os.replace()`. Clean up an
-unfinished sibling after failure. This approach may replace the inode behind a
-hard link; preserving hard-link identity and extended attributes is outside the
-initial scope and should be documented in `--help` if the tool becomes general
-purpose.
+Saving should provide atomic visibility: encode the complete new content first,
+write it to a private temporary sibling, flush and `fsync` it, apply the
+intended permission bits when appropriate, then replace the target with
+`os.replace()`. Clean up an unfinished sibling after failure. Full power-loss
+durability and the handling of a directory-sync failure after replacement need
+an explicit policy. Inode replacement can break hard links and lose ownership,
+ACLs, extended attributes, security labels, and other metadata; these effects
+must be supported safely, rejected, or kept prominent if the tool becomes
+general purpose.
 
 Before replacement, compare the target's current identity, size, and
 nanosecond-resolution modification time with the values captured at load time.
-If another process changed the file, refuse to overwrite it and keep the editor
-open. Likewise, if a new target appeared after opening a nonexistent file,
-report a conflict.
+This detects common external changes and keeps the editor open on a detected
+conflict. It does not detect every same-inode change whose size and timestamp
+are preserved, and another writer can race after the final check. If a new
+target appears after opening a nonexistent file, report a conflict.
 
 ## Exit status
 
@@ -395,45 +505,44 @@ editing behavior.
 
 ## Ongoing verification
 
-Unit tests cover and should continue to cover fixed and automatic height
-parsing, content-driven growth, manual takeover, runtime adjustment and
-capping,
-UTF-8/BOM handling, LF and CRLF preservation, final-newline preservation,
-new-file creation, permission preservation, conflict detection, and cleanup
-after failed saves.
+The current unit suite covers fixed and automatic height parsing, content-driven
+growth, manual adjustment, UTF-8/BOM and newline handling, direct new-file
+creation, permission-bit preservation, common conflict detection, replacement
+failure cleanup, keymaps, help, search, clipboard operations, save prompts,
+external handoff, and exit summaries. One known gap is important enough to call
+out twice: direct `save_document()` can create a new empty file, but the UI does
+not call it for an initially empty unchanged buffer.
 
-Prompt behavior is tested with prompt_toolkit's pipe-input and dummy-output
-helpers, including mode-specific help, search and repetition in both keymaps,
-vi Ex commands, `ZZ`, clipboard operations, save, and safe exit. PTY
-integration tests:
+Prompt behavior is exercised through prompt_toolkit pipe input and dummy output.
+The POSIX PTY suite currently covers an 80x24 terminal, a sentinel above the
+editor, absence of common alternate-screen sequences, help/search/exit-prompt
+rendering, runtime height keys, save and discard results, `SIGINT`, `SIGTERM`,
+terminal-attribute restoration, Git-like mid-row startup, and external-editor
+success or nonzero exit.
 
-- Start the editor in an 80x24 pseudo-terminal with recognizable output above
-  it and verify that output remains present.
-- Assert that captured output never contains alternate-screen sequences such as
-  `CSI ? 1049 h`, `CSI ? 1047 h`, or `CSI ? 47 h`.
-- Verify that a requested height of 20 never renders a larger region.
-- Use `Alt-Up` and `Alt-Down` to shrink and expand the live region, verify its
-  status feedback, and confirm that output above it remains untouched.
-- Insert and delete lines, save, and verify exact file bytes and status `0`.
-- Cancel an unchanged and a modified buffer, verify status `130`, and verify the
-  original bytes remain unchanged.
-- Confirm that controlled exits retain the text and line-number viewport, use a
-  non-inverted result row with the exact disk byte count, and leave the next
-  prompt below it; confirm abnormal termination erases instead.
-- Simulate a save error and an external file change and confirm that editing
-  continues without overwriting the target.
-- Send resize and termination signals and verify terminal cleanup.
+Those tests do not yet establish the full promotion contract. Complete the
+verification tasks in [tasks.org](../tasks.org), especially:
 
-Finally, test manually while composing a Git commit message in a disposable
-repository with a staged change:
+- reconstruct the terminal screen and assert final cells, styles, scrolling,
+  and next-prompt location rather than only finding text in update fragments;
+- resize a live PTY and cover `SIGHUP`, CPR timeout/malformed response, early
+  typeahead, narrow widths, long lines, Unicode, and terminal variants;
+- inject every save-transaction failure boundary, including write, `fchmod()`,
+  file/directory sync, close, replacement, and cleanup;
+- run CI across the declared Python, prompt-toolkit, OS, and static-analysis
+  matrix; and
+- execute a disposable end-to-end Git commit flow.
+
+Until the Git test is automated, test manually with a staged change:
 
 ```bash
 GIT_EDITOR='python3 /path/to/inedit.py' git commit
 ```
 
 Exercise a multiline message longer than the viewport, a long line requiring
-horizontal scrolling, save, and cancellation. Add separate direct-file smoke
-tests for filenames containing spaces.
+horizontal scrolling, save, unchanged exit, and cancellation, with Git's
+waiting advice both enabled and disabled. Add separate direct-file smoke tests
+for filenames containing spaces.
 
 ## Continuing non-goals
 
