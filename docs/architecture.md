@@ -297,6 +297,7 @@ trims and dispatches only these commands:
 | `q`, `quit` | Exit only if unchanged; otherwise show `No write since last change` |
 | `wq` | Use the save path and exit only after a successful save |
 | `h`, `help` | Open the mode-specific vi help view |
+| `external` | Invoke the same external-editor action as default-mode Alt-V |
 
 Unknown commands return to Normal mode and show a concise error. Do not parse
 filenames, bang variants, options, command separators, or the broader Ex

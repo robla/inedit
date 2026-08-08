@@ -33,3 +33,4 @@ Conventions:
 ** Codex [2026-08-07 Fri 18:22 PDT]: Made =--vi= start in Normal mode and added live =[NORMAL]=, =[INSERT]=, =[REPLACE]=, and =[VISUAL]= status labels with PTY coverage.
 ** Codex [2026-08-07 Fri 18:38 PDT]: Added mode-specific =Ctrl-G= help, with a vi reference for supported modes, motions, operators, selections, and editing commands that omits Emacs-only shortcuts.
 ** Codex [2026-08-07 Fri 19:05 PDT]: Added a limited vi Normal-mode Ex command line with =:w=, =:q=, =:wq=, and =:h=, preserving literal colon insertion in default mode.
+** Codex [2026-08-07 Fri 19:16 PDT]: Added the inedit-specific =:external= vi Ex command, sharing the existing =$VISUAL=/=$EDITOR= handoff used by default-mode =Alt-V=.

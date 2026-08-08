@@ -494,6 +494,7 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIn("v / V", help_text)
         self.assertIn("Ex commands (Normal mode)", help_text)
         self.assertIn(":wq", help_text)
+        self.assertIn(":external", help_text)
         for unavailable in (
             "Ctrl-Space",
             "Ctrl-Y",
@@ -995,7 +996,7 @@ class PtyIntegrationTests(unittest.TestCase):
         self.assertEqual(gap, b"")
 
     def run_external_editor_case(
-        self, *, editor_text: str, exit_code: int
+        self, *, editor_text: str, exit_code: int, vi: bool = False
     ) -> tuple[bytes, int, str]:
         import fcntl
         import pty
@@ -1029,14 +1030,17 @@ class PtyIntegrationTests(unittest.TestCase):
             environment["FAKE_EDITOR_TEXT"] = editor_text
             environment["FAKE_EDITOR_EXIT_CODE"] = str(exit_code)
 
+            command = [
+                sys.executable,
+                str(Path(inedit.__file__).resolve()),
+                "--height",
+                "8",
+            ]
+            if vi:
+                command.append("--vi")
+            command.append(str(path))
             process = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(Path(inedit.__file__).resolve()),
-                    "--height",
-                    "8",
-                    str(path),
-                ],
+                command,
                 stdin=slave,
                 stdout=slave,
                 stderr=slave,
@@ -1045,8 +1049,10 @@ class PtyIntegrationTests(unittest.TestCase):
                 close_fds=True,
             )
             captured = bytearray()
+            cursor_position_requests_answered = 0
 
             def read_until(marker: bytes) -> None:
+                nonlocal cursor_position_requests_answered
                 deadline = time.monotonic() + 5
                 while (
                     not self.terminal_updates_contain(captured, marker)
@@ -1055,6 +1061,10 @@ class PtyIntegrationTests(unittest.TestCase):
                     readable, _, _ = select.select([master], [], [], 0.1)
                     if readable:
                         captured.extend(os.read(master, 65536))
+                        total_requests = bytes(captured).count(b"\x1b[6n")
+                        while cursor_position_requests_answered < total_requests:
+                            os.write(master, b"\x1b[2;1R")
+                            cursor_position_requests_answered += 1
                 self.assertTrue(
                     self.terminal_updates_contain(captured, marker),
                     f"{marker!r} was not rendered by terminal updates {captured!r}",
@@ -1062,14 +1072,14 @@ class PtyIntegrationTests(unittest.TestCase):
 
             try:
                 read_until(b"^S Save")
-                os.write(master, b"\x1bv")
+                os.write(master, b":external\r" if vi else b"\x1bv")
                 if exit_code == 0:
-                    read_until(b"Applied external edit")
+                    read_until(b"Applied ex")
                     os.write(master, b"\x13\x18")
                 else:
                     # The status line truncates long messages, so match a
                     # prefix that survives truncation.
-                    read_until(b"External editor exit")
+                    read_until(b"External ")
                     os.write(master, b"\x03")
                 returncode = process.wait(timeout=5)
             finally:
@@ -1091,6 +1101,20 @@ class PtyIntegrationTests(unittest.TestCase):
     def test_alt_v_discards_changes_when_external_editor_fails(self) -> None:
         _output, returncode, text = self.run_external_editor_case(
             editor_text="should not appear", exit_code=7
+        )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(text, "original")
+
+    def test_vi_external_applies_external_editor_changes(self) -> None:
+        _output, returncode, text = self.run_external_editor_case(
+            editor_text="edited through vi Ex", exit_code=0, vi=True
+        )
+        self.assertEqual(returncode, 0)
+        self.assertEqual(text, "edited through vi Ex")
+
+    def test_vi_external_discards_changes_when_external_editor_fails(self) -> None:
+        _output, returncode, text = self.run_external_editor_case(
+            editor_text="should not appear", exit_code=7, vi=True
         )
         self.assertEqual(returncode, 0)
         self.assertEqual(text, "original")

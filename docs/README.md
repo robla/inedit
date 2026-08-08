@@ -140,11 +140,14 @@ Normal mode also has a deliberately small Ex command line:
 | `:q` | Exit if the buffer is unchanged; otherwise report an error |
 | `:wq` | Save and exit |
 | `:h` | Open the vi-mode help screen |
+| `:external` | Open the buffer in `$VISUAL` or `$EDITOR`, falling back to `vi` |
 
-The long forms `:write`, `:quit`, and `:help` also work. Press `Escape` or
-`Ctrl-C` to cancel command entry. Filenames, `!` variants, command options,
-and other Ex commands are not supported. Use `Ctrl-X` when you want the
-interactive save/discard prompt instead of vi-style `:q` behavior.
+The long forms `:write`, `:quit`, and `:help` also work. `:external` is an
+`inedit` extension rather than a standard vi Ex command; it provides the same
+external-editor handoff as default mode's `Alt-V`. Press `Escape` or `Ctrl-C`
+to cancel command entry. Filenames, `!` variants, command options, and other
+Ex commands are not supported. Use `Ctrl-X` when you want the interactive
+save/discard prompt instead of vi-style `:q` behavior.
 
 ## File and save behavior
 

@@ -140,6 +140,7 @@ Ex commands (Normal mode)
   :q            Exit only when the buffer is unchanged
   :wq           Save and exit
   :h            Open this help
+  :external     Edit with $VISUAL or $EDITOR (else vi)
   Esc / Ctrl-C  Cancel the command line
 
 Counts work with Normal-mode commands and operators. Yanks and deletions use
@@ -934,6 +935,8 @@ def build_application(
             help_area.buffer.cursor_position = 0
             event.app.layout.focus(help_area)
             event.app.invalidate()
+        elif command == "external":
+            open_in_external_editor(event)
         elif command:
             state.message = f"Not an editor command: {command}"
             event.app.invalidate()
