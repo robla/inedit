@@ -164,6 +164,9 @@ direction. While entering a search, `Enter` or `Escape` accepts the current
 match and `Ctrl-C` or `Ctrl-G` cancels it. These are prompt-toolkit's native vi
 search bindings.
 
+`ZZ` saves the current file only when the buffer is modified, then exits. It
+does not display the interactive `Ctrl-X` save/discard prompt.
+
 Normal mode also has a deliberately small Ex command line:
 
 | Command | Action |

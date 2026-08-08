@@ -201,7 +201,8 @@ starts in Normal mode, and the status line shows `[NORMAL]`, `[INSERT]`,
 implements `:w`, `:q`, `:wq`, `:h`, and the inedit-specific `:external`
 (plus the applicable long forms). It does not accept filenames, `!` variants,
 options, or arbitrary Ex commands. Native vi `/` and `?` searches and `n`/`N`
-repetition are available in Normal mode.
+repetition are available in Normal mode. `ZZ` uses vi's write-if-modified and
+exit behavior.
 
 On the main screen, `Ctrl-C` follows the same clean-or-prompted exit path as
 `Ctrl-X`. Within the prompt, `Ctrl-C` returns to editing.

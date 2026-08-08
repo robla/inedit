@@ -147,6 +147,7 @@ Normal-mode editing
   u             Undo
   J             Join the next line
   >> / <<       Indent / unindent line
+  ZZ            Save if modified, then exit
 
 Visual mode
   Movement      Extend the selection
@@ -959,6 +960,17 @@ def build_application(
         and text_area.buffer.selection_state is None
         and application_reference[0].layout.current_buffer is text_area.buffer
     )
+
+    @bindings.add(
+        "Z",
+        "Z",
+        filter=vi_normal_editor,
+        eager=True,
+        save_before=lambda _event: False,
+    )
+    def vi_write_if_modified_and_exit(event: Any) -> None:
+        if not state.is_modified(text_area.buffer.text) or save_buffer(event):
+            event.app.exit(result=EditorResult(ExitReason.SAVED))
 
     @bindings.add(":", filter=vi_normal_editor, eager=True)
     def open_ex_command(event: Any) -> None:

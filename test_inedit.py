@@ -499,6 +499,7 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIn(":external", help_text)
         self.assertIn("/ / ?", help_text)
         self.assertIn("n / N", help_text)
+        self.assertIn("ZZ", help_text)
         for unavailable in (
             "Ctrl-Space",
             "Ctrl-Y",
@@ -509,6 +510,56 @@ class LayoutAndStateTests(unittest.TestCase):
         ):
             self.assertNotIn(unavailable, help_text)
         self.assertTrue(editor.help_area.buffer.read_only())
+
+    def test_vi_zz_saves_a_modified_buffer_and_exits(self) -> None:
+        path = self.directory / "existing.txt"
+        path.write_text("original", encoding="utf-8")
+
+        result, _editor = self.run_editor(path, "A!\x1bZZ", vi=True)
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "original!")
+
+    def test_vi_zz_does_not_rewrite_an_unchanged_file(self) -> None:
+        path = self.directory / "existing.txt"
+        path.write_text("original", encoding="utf-8")
+        before = path.stat()
+
+        result, _editor = self.run_editor(path, "ZZ", vi=True)
+
+        after = path.stat()
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "original")
+        self.assertEqual(
+            (after.st_ino, after.st_mtime_ns),
+            (before.st_ino, before.st_mtime_ns),
+        )
+
+    def test_vi_zz_stays_open_when_saving_fails(self) -> None:
+        path = self.directory / "existing.txt"
+        path.write_text("original", encoding="utf-8")
+        real_save_document = inedit.save_document
+        attempts = 0
+
+        def fail_first_save(
+            document: inedit.Document, text: str
+        ) -> inedit.Document:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise inedit.SaveError("simulated failure")
+            return real_save_document(document, text)
+
+        with mock.patch.object(
+            inedit, "save_document", side_effect=fail_first_save
+        ):
+            result, _editor = self.run_editor(
+                path, "A!\x1bZZ:wq\r", vi=True
+            )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(path.read_text(encoding="utf-8"), "original!")
 
     def test_vi_ex_write_saves_without_exiting(self) -> None:
         path = self.directory / "existing.txt"

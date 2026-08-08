@@ -301,6 +301,10 @@ trims and dispatches only these commands:
 | `h`, `help` | Open the mode-specific vi help view |
 | `external` | Invoke the same external-editor action as default-mode Alt-V |
 
+Also bind Normal-mode `ZZ` directly to vi's `:xit` semantics: exit immediately
+when unchanged, save and exit when modified, and remain open if saving fails.
+It must not enter the interactive `Ctrl-X` save/discard prompt.
+
 Unknown commands return to Normal mode and show a concise error. Do not parse
 filenames, bang variants, options, command separators, or the broader Ex
 language. Plain `:` remains insertable text in default Emacs mode.
