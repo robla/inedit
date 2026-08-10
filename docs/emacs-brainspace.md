@@ -107,24 +107,28 @@ gets a visible token (`**`, `%%`, `Narrow`). Help is available elsewhere via
 no permanent space on “Save” or “Exit” reminders. Its default line number is
 enabled, while its column is optional.
 
-## A mode-line-shaped footer for `inedit`
+## The mode-line-shaped `inedit` footer
 
 Literal imitation would expose meaningless fields: `inedit` has one buffer,
 one window, no major/minor modes in default mode, and a deliberately narrow
 file-format contract. Borrow the information design, not every glyph.
 
-Recommended normal forms:
+The implemented default-mode forms combine Emacs-shaped telemetry with
+permanent help for occasional users:
 
 ```text
--- COMMIT_EDITMSG   All L1 C1
-** COMMIT_EDITMSG   Top L12 C7
+-- COMMIT_EDITMSG   All L1 C1 | ^G Help | ^S Save | ^X/^C Exit | unchanged
+** COMMIT_EDITMSG   Top L12 C7 | ^G Help | ^S Save | ^X/^C Exit | modified
 ```
 
-- Replace the words `unchanged` and `modified` with `--` and `**`.
+- Lead with `--` or `**` instead of making the full state word primary.
 - Keep the filename and one-based line/column numbers.
-- Add `All`/`Top`/`Bot`/percentage only if viewport position proves useful.
+- Use `All`/`Top`/`Bot`/percentage for viewport position.
 - Omit invariant encoding and mode fields.
-- Omit permanent key hints; `C-g` help remains the command reference.
+- Keep only the application-level Help, Save, and Exit hints; `C-g` opens the
+  full command reference.
+- Repeat `unchanged` or `modified` at the end as a legend for the state glyph;
+  omit it first when the row becomes crowded.
 - Keep `[NORMAL]`, `[INSERT]`, and related labels in vi mode because they carry
   essential, changing state.
 - Let search, Ex input, exit questions, errors, saves, and height feedback

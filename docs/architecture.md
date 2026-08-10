@@ -442,26 +442,34 @@ parallel key handler; implement only the documented subset.
 ## Status line
 
 Generate status fragments on demand from the requested filename, the current
-buffer document, modified state, message, and key reminder. Use one-based
-logical line and column numbers. The stable right side is:
+buffer document, rendered viewport, modified state, message, and key reminder.
+Use one-based logical line and column numbers. The ordinary form is:
 
 ```text
-Ln N, Col N | modified/unchanged | ^G Help | ^S Save | ^X/^C Exit
+** path   Top LN CN | ^G Help | ^S Save | ^X/^C Exit | modified
 ```
 
-In vi mode, insert `[NORMAL]`, `[INSERT]`, `[REPLACE]`, or `[VISUAL]` after
-the modified state. Derive it on every status render from prompt-toolkit's
-current vi and selection state so transitions appear immediately. The mode
-label is part of the stable suffix and is omitted in Emacs mode.
+Use `--` plus `unchanged` when the current text equals the last loaded or saved
+text, and `**` plus `modified` otherwise. Derive `All`, `Top`, `Bot`, or the
+percentage of the buffer above the viewport's top from the editing window's
+latest render information. Before the first render, derive `All` or `Top` from
+the logical line count and effective text height.
+
+In vi mode, insert `[NORMAL]`, `[INSERT]`, `[REPLACE]`, or `[VISUAL]` between
+the position and key hints. Derive it on every status render from
+prompt-toolkit's current vi and selection state so transitions appear
+immediately. The mode label is part of the stable suffix and is omitted in
+Emacs mode.
 
 Place a save error or discard reminder before that stable suffix. Calculate
 width in terminal cells with prompt_toolkit's Unicode-width helpers. When the
-row is too narrow, left-truncate the filename first with an ellipsis, then the
-transient message. Preserve cursor position and key hints as long as the
-terminal width permits. The status `Window`, search toolbar, and Ex command
-line must each remain one row and must not wrap. Their conditional containers
-must be mutually exclusive without removing the search control from the
-layout tree.
+row is too narrow, left-truncate the filename first with an ellipsis, omit the
+redundant `unchanged`/`modified` word next, and only then truncate a transient
+message. Preserve the state marker, cursor position, vi mode, and key hints as
+long as the terminal width permits. The status `Window`, search toolbar, and
+Ex command line must each remain one row and must not wrap. Their conditional
+containers must be mutually exclusive without removing the search control
+from the layout tree.
 
 ## Save transaction
 

@@ -829,6 +829,26 @@ def vi_mode_label(
     return "INSERT"
 
 
+def format_viewport_position(
+    first_visible_line: int,
+    last_visible_line: int,
+    line_count: int,
+) -> str:
+    """Return an Emacs-shaped viewport position label."""
+
+    if line_count <= 0:
+        return "All"
+    first = min(max(first_visible_line, 0), line_count - 1)
+    last = min(max(last_visible_line, first), line_count - 1)
+    if first == 0 and last == line_count - 1:
+        return "All"
+    if first == 0:
+        return "Top"
+    if last == line_count - 1:
+        return "Bot"
+    return f"{100 * first // line_count}%"
+
+
 def format_status(
     state: EditorState,
     current_text: str,
@@ -836,41 +856,68 @@ def format_status(
     cursor_column: int,
     columns: int,
     vi_mode: str | None = None,
+    viewport_position: str = "All",
 ) -> str:
-    """Format a single status row, truncating the filename first."""
+    """Format the one-row status, dropping redundant text when necessary."""
 
     filename = _one_line(state.document.display_path)
     message = _one_line(state.message) if state.message else ""
-    modified = "modified" if state.is_modified(current_text) else "unchanged"
+    modified = state.is_modified(current_text)
+    marker = "**" if modified else "--"
+    status_word = "modified" if modified else "unchanged"
     if state.exit_prompt:
         return _truncate_right(EXIT_PROMPT, columns)
     help_action = "^G Close" if state.help_visible else "^G Help"
-    suffix_parts = [f"Ln {cursor_row + 1}, Col {cursor_column + 1}", modified]
+    suffix_parts = [
+        f"{viewport_position} L{cursor_row + 1} C{cursor_column + 1}"
+    ]
     if vi_mode is not None:
         suffix_parts.append(f"[{vi_mode}]")
     suffix_parts.extend((help_action, "^S Save", "^X/^C Exit"))
-    suffix = " | ".join(suffix_parts)
-    separator = " | "
+    stable_suffix = "   " + " | ".join(suffix_parts)
+    marker_prefix = marker + " "
+    message_suffix = f" | {message}" if message else ""
 
-    if _display_width(suffix) >= columns:
-        return _truncate_right(suffix, columns)
+    def with_filename(include_status_word: bool) -> str | None:
+        legend = f" | {status_word}" if include_status_word else ""
+        fixed_width = _display_width(
+            marker_prefix + message_suffix + stable_suffix + legend
+        )
+        filename_width = columns - fixed_width
+        if filename_width < 1:
+            return None
+        return (
+            marker_prefix
+            + _truncate_left(filename, filename_width)
+            + message_suffix
+            + stable_suffix
+            + legend
+        )
 
-    optional_suffix = separator + suffix
+    rendered = with_filename(include_status_word=True)
+    if rendered is not None:
+        return rendered
+
+    rendered = with_filename(include_status_word=False)
+    if rendered is not None:
+        return rendered
+
+    # A transient message is more useful than a filename on a very narrow
+    # screen. Keep the state marker and stable controls, then fit what remains.
     if message:
-        message_suffix = separator + message + optional_suffix
-    else:
-        message_suffix = optional_suffix
-
-    filename_width = columns - _display_width(message_suffix)
-    if filename_width > 0:
-        return _truncate_left(filename, filename_width) + message_suffix
-
-    if message:
-        message_width = columns - _display_width(optional_suffix)
+        message_prefix = marker_prefix + "… | "
+        message_width = columns - _display_width(
+            message_prefix + stable_suffix
+        )
         if message_width > 0:
-            return _truncate_right(message, message_width) + optional_suffix
+            return (
+                message_prefix
+                + _truncate_right(message, message_width)
+                + stable_suffix
+            )
 
-    return suffix
+    essential = marker_prefix + " | ".join(suffix_parts)
+    return _truncate_right(essential, columns)
 
 
 def build_application(
@@ -1387,9 +1434,23 @@ def build_application(
         buffer_document = text_area.buffer.document
         columns = 80
         mode = None
+        line_count = buffer_document.line_count
+        visible_rows = max(1, state.effective_height - 1)
+        viewport_position = format_viewport_position(
+            0,
+            min(line_count - 1, visible_rows - 1),
+            line_count,
+        )
         if application_reference:
             running_application = application_reference[0]
             columns = running_application.output.get_size().columns
+            render_info = text_area.window.render_info
+            if render_info is not None and render_info.displayed_lines:
+                viewport_position = format_viewport_position(
+                    render_info.first_visible_line(),
+                    render_info.last_visible_line(),
+                    render_info.content_height,
+                )
             if options.vi:
                 mode = vi_mode_label(
                     running_application.vi_state.input_mode,
@@ -1405,6 +1466,7 @@ def build_application(
             buffer_document.cursor_position_col,
             columns,
             mode,
+            viewport_position,
         )
         return FormattedText([("class:status", status)])
 

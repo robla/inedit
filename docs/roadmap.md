@@ -251,15 +251,17 @@ or validate its content from the intentional binding registry.
 
 ### 6. Reconcile the status line with the keymap
 
-The one-row status line includes `^G Help`, `^S Save`, and `^X/^C Exit`, with
-`^G Help` changing to `^G Close` while help is visible. The full key list
-belongs in help. An active incremental search or vi Ex command temporarily
-uses this same footer row, so neither feature changes the editor's height.
+The implemented one-row status line combines Emacs-like `--`/`**` state marks,
+filename, `All`/`Top`/`Bot`/percentage viewport position, and one-based `L`/`C`
+point with `^G Help`, `^S Save`, and `^X/^C Exit`. A trailing
+`unchanged`/`modified` word intentionally teaches the symbolic state and is
+the first field omitted after filename truncation on a narrow terminal. Vi
+mode retains its explicit mode label. [Emacs brainspace](emacs-brainspace.md)
+records the rationale and compatibility boundary.
 
-[Emacs brainspace](emacs-brainspace.md) documents a terser possible direction:
-use Emacs-like `--`/`**` state marks, filename, viewport position, and point;
-move permanent command reminders into help; and retain explicit vi mode labels.
-This is a design recommendation, not current behavior.
+`^G Help` changes to `^G Close` while help is visible. An active incremental
+search or vi Ex command temporarily uses this same footer row, so neither
+feature changes the editor's height. The full key list belongs in help.
 
 ### 7. Refine content-aware automatic height
 

@@ -501,10 +501,13 @@ class LayoutAndStateTests(unittest.TestCase):
         document = inedit.load_document(path)
         state = inedit.EditorState(document, "")
         status_line = inedit.format_status(state, "", 0, 0, 80)
-        self.assertTrue(status_line.startswith("…"))
-        self.assertIn("Ln 1, Col 1", status_line)
+        self.assertTrue(status_line.startswith("-- …"))
+        self.assertIn("All L1 C1", status_line)
         self.assertIn("^G Help", status_line)
-        self.assertTrue(status_line.endswith("^S Save | ^X/^C Exit"))
+        self.assertTrue(
+            status_line.endswith("^S Save | ^X/^C Exit | unchanged")
+        )
+        self.assertEqual(inedit._display_width(status_line), 80)
 
         state.help_visible = True
         help_status = inedit.format_status(state, "", 0, 0, 80)
@@ -519,9 +522,40 @@ class LayoutAndStateTests(unittest.TestCase):
         )
         self.assertIn("| [INSERT] |", insert_status)
 
+        modified_status = inedit.format_status(
+            state,
+            "changed",
+            11,
+            6,
+            120,
+            viewport_position="Top",
+        )
+        self.assertTrue(modified_status.startswith("** "))
+        self.assertIn("   Top L12 C7 |", modified_status)
+        self.assertTrue(modified_status.endswith("| modified"))
+
         state.exit_prompt = True
         prompt_status = inedit.format_status(state, "changed", 0, 0, 80)
         self.assertEqual(prompt_status, inedit.EXIT_PROMPT)
+
+    def test_status_drops_redundant_word_when_too_narrow(self) -> None:
+        path = self.directory / ("very-long-name-" * 8)
+        state = inedit.EditorState(inedit.load_document(path), "")
+
+        status_line = inedit.format_status(state, "", 0, 0, 55)
+
+        self.assertTrue(status_line.startswith("-- …"))
+        self.assertIn("All L1 C1", status_line)
+        self.assertIn("^G Help", status_line)
+        self.assertTrue(status_line.endswith("^X/^C Exit"))
+        self.assertNotIn("unchanged", status_line)
+        self.assertEqual(inedit._display_width(status_line), 55)
+
+    def test_viewport_position_uses_emacs_shaped_labels(self) -> None:
+        self.assertEqual(inedit.format_viewport_position(0, 6, 7), "All")
+        self.assertEqual(inedit.format_viewport_position(0, 6, 20), "Top")
+        self.assertEqual(inedit.format_viewport_position(13, 19, 20), "Bot")
+        self.assertEqual(inedit.format_viewport_position(5, 11, 20), "25%")
 
     def test_ctrl_s_saves_without_exiting(self) -> None:
         path = self.directory / "new.txt"

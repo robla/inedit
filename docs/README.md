@@ -65,6 +65,27 @@ GIT_EDITOR='/absolute/path/to/inedit.py' git commit
 | `PageUp`, `PageDown` | Move by a viewport |
 | `Backspace`, `Delete` | Delete without changing the internal clipboard |
 
+## Status line
+
+The footer combines terse Emacs-shaped state with a small command reminder:
+
+```text
+-- COMMIT_EDITMSG   All L1 C1 | ^G Help | ^S Save | ^X/^C Exit | unchanged
+** COMMIT_EDITMSG   Top L12 C7 | ^G Help | ^S Save | ^X/^C Exit | modified
+```
+
+`--` means the buffer matches its last loaded or saved text; `**` means it has
+unsaved changes. `All`, `Top`, `Bot`, or a percentage describes the visible
+part of the buffer. `L` and `C` are one-based logical line and column numbers.
+The final word deliberately repeats the symbolic state for discoverability.
+On narrower terminals, `inedit` shortens the filename from the left and then
+omits that redundant word before sacrificing position or key hints.
+
+In vi mode, `[NORMAL]`, `[INSERT]`, `[REPLACE]`, or `[VISUAL]` appears between
+the position and command hints. Search, Ex commands, and exit questions
+temporarily replace the ordinary footer; errors and short-lived messages
+appear within it.
+
 `Ctrl-X` and `Ctrl-C` are equivalent main-screen exit commands. An unchanged
 buffer exits immediately. A modified buffer displays
 `Save modified buffer? Y Yes | N No | ^C Cancel`:
