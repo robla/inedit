@@ -47,7 +47,7 @@ cs:ch-dfr  buf      pos line   (major minor)
 
 | Field | Meaning |
 |---|---|
-| `cs:` | Character encoding and newline convention |
+| `cs:` | Buffer/file encoding and newline convention; a text terminal adds keyboard-input and terminal-output encodings before `cs` |
 | `ch` | `--` unchanged, `**` modified, `%%` read-only, `%*` read-only and modified |
 | `d` | Dedicated-window marker, normally absent |
 | `fr` | Frame name on a text terminal |
@@ -64,15 +64,37 @@ Square brackets around the mode names mean a recursive edit is active. On a
 text terminal, dashes fill the unused width. Those marks are grammar, not
 decoration.
 
-A schematic line:
+### Reading a terminal mode line
+
+Consider this real example:
 
 ```text
-U:**-F1  COMMIT_EDITMSG   Top L12   (Text)------------------------
-  ^^     ^                ^   ^     ^
-  dirty  buffer           view line editing mode
+-UUU:**--F1  moo            All (1,4)      (Fundamental Wrap) --------
 ```
 
-The exact encoding prefix varies. The durable reading order is:
+| Text | Meaning |
+|---|---|
+| first `-` | The standard mode line's leading delimiter |
+| first `U` | Keyboard-input coding system is UTF-8 |
+| second `U` | Terminal-output coding system is UTF-8 |
+| third `U` | Buffer/file coding system is UTF-8 |
+| `:` | Unix newline convention; DOS or classic Mac files use another mark |
+| `**` | Writable and modified; `--` would mean writable and clean |
+| first `-` after `**` | The buffer's default directory is local; `@` means remote |
+| `-F1` | Frame `F1`; text-terminal frame names include the leading hyphen |
+| `moo` | Buffer name |
+| `All` | The entire buffer fits in the window |
+| `(1,4)` | Point is on line 1, column 4; columns are zero-based by default |
+| `Fundamental` | The buffer's major mode |
+| `Wrap` | Visual Line minor mode is active, so long logical lines wrap at word boundaries |
+| final dashes | Unused mode-line width |
+
+Thus `-UUU:` is not one opaque file property. It is a leading delimiter,
+three UTF-8 coding-system mnemonics (keyboard, terminal, file), and the Unix
+newline marker. `C-h C RET` describes the coding systems currently in use;
+`M-x list-coding-systems` lists their mode-line letters.
+
+The durable reading order is:
 
 1. Is the buffer modified or read-only?
 2. Which buffer is this?
@@ -121,6 +143,8 @@ editor's application lifecycle.
 
 Primary references: GNU Emacs Manual sections on the
 [mode line](https://www.gnu.org/software/emacs/manual/html_node/emacs/Mode-Line.html),
+[coding systems](https://www.gnu.org/software/emacs/manual/html_node/emacs/Coding-Systems.html),
+[Visual Line mode](https://www.gnu.org/software/emacs/manual/html_node/emacs/Visual-Line-Mode.html),
 [mark](https://www.gnu.org/software/emacs/manual/html_node/emacs/Setting-Mark.html),
 [incremental search](https://www.gnu.org/software/emacs/manual/html_node/emacs/Incremental-Search.html),
 [saving](https://www.gnu.org/software/emacs/manual/html_node/emacs/Save-Commands.html),
