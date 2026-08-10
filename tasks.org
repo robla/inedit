@@ -404,3 +404,5 @@ When the key is pressed, replace the file display with the metadata display.
 ** TODO [#A] t0010 Have help screen expand editor space to 20 lines
 ** TODO [#A] t0011 Have help screen have a more "more" (or "less")-like display
 Currently, when help is constrained to 5 lines, it's difficult to see that there's a lot more help text to see.  In "more" (and "less"), there's an indicator at the bottom of the screen that there's more to see.  In the name of compactness, we may want to have a miniature right-aligned "-v More v-" indicator (or something less ugly) that doesn't fully replace the last line of text, and/or we may just want to implement t0010 so that this is less of a problem.
+** TODO [#A] t0012 when the file is 3 lines or less, show 4 lines
+Let's make it so that the editor is small when the file is small.  I originally thought 8 lines was a good compromise, but I realize now that we should stay true to the "inline" part of inedit.py, and make it so that editing a one-liner doesn't absorb too many lines in the terminal history.  7 lines should show an 8-line editor, but smaller than that should scale down to the size of the file.
