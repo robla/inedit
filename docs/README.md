@@ -10,6 +10,8 @@ This page documents the current behavior. Proposed changes are tracked in
 [roadmap.md](roadmap.md). Text editing follows prompt-toolkit's default Emacs
 bindings wherever practical. Nano inspires application-level controls such as
 help and the exit flow, rather than replacing the editing engine.
+The design boundary and a terse guide to Emacs's mode line are in
+[Emacs brainspace](emacs-brainspace.md).
 
 ## Starting the editor
 

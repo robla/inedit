@@ -253,9 +253,13 @@ or validate its content from the intentional binding registry.
 
 The one-row status line includes `^G Help`, `^S Save`, and `^X/^C Exit`, with
 `^G Help` changing to `^G Close` while help is visible. The full key list
-belongs in help; the status line should favor help, save, exit, and the active
-transient prompt. An active incremental search or vi Ex command temporarily
+belongs in help. An active incremental search or vi Ex command temporarily
 uses this same footer row, so neither feature changes the editor's height.
+
+[Emacs brainspace](emacs-brainspace.md) documents a terser possible direction:
+use Emacs-like `--`/`**` state marks, filename, viewport position, and point;
+move permanent command reminders into help; and retain explicit vi mode labels.
+This is a design recommendation, not current behavior.
 
 ### 7. Refine content-aware automatic height
 
