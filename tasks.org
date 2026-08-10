@@ -384,3 +384,23 @@ Completion criteria:
   prompt-toolkit renders them visibly rather than emitting terminal control
   effects.
 - Keep generated filesystem operations confined to temporary directories.
+
+** TODO [#A] t0007 Clean up "Saved" and "No changes to save messages"
+"Saved" should probably replace "unchanged" on the right (and maybe be "saved").  "No changes to save" should be an ephemeral message that temporarily replaces the right-hand status text, and remains on screen for 2 seconds (or thereabouts).
+** TODO [#A] t0008 Create streamlined ways of getting file info
+When the filename gets truncated in the status bar, there needs to be
+a quick and easy way of seeing that information.  There are two
+approaches (t0008.1 and t0008.2) which aren't necessarily mutually
+exclusive, but it may be overkill to implement both.
+*** TODO [#B] t0008.1 Create keystroke for showing status bar file information
+All of the information most folks need about a file is vaguely what
+"ls -l" shows for a file, which is one line.  robla's "gls.py" command
+shows a lot of the information that robla generally wants to know (and
+compacts the permissions into 3 octal digits).  Emacs probably has yet
+another terse-and-useful version.
+*** TODO [#B] t0008.2 Create a larger file information pseudobuffer (like help)
+When the key is pressed, replace the file display with the metadata display.
+** TODO [#A] t0009 Have Ctrl-C exit help rather than exit editor when help is shown
+** TODO [#A] t0010 Have help screen expand editor space to 20 lines
+** TODO [#A] t0011 Have help screen have a more "more" (or "less")-like display
+Currently, when help is constrained to 5 lines, it's difficult to see that there's a lot more help text to see.  In "more" (and "less"), there's an indicator at the bottom of the screen that there's more to see.  In the name of compactness, we may want to have a miniature right-aligned "-v More v-" indicator (or something less ugly) that doesn't fully replace the last line of text, and/or we may just want to implement t0010 so that this is less of a problem.
