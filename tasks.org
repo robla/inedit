@@ -238,3 +238,26 @@ Done: count the editable blank row after a trailing newline; test empty and
 1/3/4/7/20+ line buffers, growth, deletion, terminal caps, retained output, and
 numeric environment/command-line overrides.  Coordinate the temporary Help
 height separately under t0010.
+
+** TODO [#C] t0013 Add community and release documents when their workflows exist  :documentation:
+Avoid boilerplate that promises unsupported processes, but add each document
+before the corresponding public workflow needs it.
+
+*** TODO [#C] t0013.1 Add SECURITY.md before wider promotion
+Define the supported versions, vulnerability-reporting scope, expected response
+process, and a private contact address.  Do not direct sensitive reports to a
+public issue tracker without an intentional disclosure policy.
+
+*** TODO [#C] t0013.2 Expand contribution guidance into CONTRIBUTING.md
+Create this when the README's short section no longer suffices.  Cover setup,
+tests, style, issue/PR expectations, licensing, and any DCO sign-off policy;
+keep the README summary and link to the full guide.
+
+*** TODO [#C] t0013.3 Add CODE_OF_CONDUCT.md with an active contributor community
+Choose a recognized policy, name a real enforcement contact, and document a
+credible reporting and response process before presenting it as project policy.
+
+*** TODO [#C] t0013.4 Add CHANGELOG.md with the first versioned release
+Use a concise user-visible change format tied to release tags.  Record breaking
+behavior, fixes, and migration notes rather than duplicating the LLM work log or
+raw commit history.
