@@ -261,3 +261,13 @@ credible reporting and response process before presenting it as project policy.
 Use a concise user-visible change format tied to release tags.  Record breaking
 behavior, fixes, and migration notes rather than duplicating the LLM work log or
 raw commit history.
+
+** TODO [#B] t0014 Handle basic special characters
+
+*** TODO [#B] t0014.1 Ensure "^I" shows up more like a normal tab
+I'm guessing 8-space tabs would be easiest, but I personally prefer
+4-space tabs.  If prompt_toolkit has a default, I think I want to use
+that.
+
+** TODO [#B] t0015 Allow startup with no file
+Perhaps call the empty buffer "*scratch*", or maybe do whatever nano/joe/etc do
