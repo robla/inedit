@@ -23,6 +23,7 @@ This gives editing compatibility, not command-language compatibility.
 | Kill backward | `C-u` is a prefix argument | `C-u` kills to line start | prompt-toolkit/readline behavior, not Emacs |
 | Search | `C-s` forward, `C-r` backward | `C-w` forward without a region, `C-r` backward | `C-s` is reserved for Save |
 | Save and exit | `C-x C-s`, `C-x C-c` | `C-s`, `C-x` or `C-c` | Nano-like lifecycle |
+| Recovery auto-save | `#filename#`; after 300 input characters or about 30 seconds idle | Private `#filename#` every 30 seconds while modified | Same artifact and explicit-save cleanup, simpler trigger |
 | Help and cancel | `C-h` help, `C-g` cancel | `C-g` help; it cancels an active search | Deliberate conflict |
 | Undo and redo | `C-_`/`C-/` undo; undo history supplies redo | `C-_` or `C-z` undo, `M-e` redo | Convenience bindings |
 | Fill paragraph | `M-q` | `M-q` | Direct match |
@@ -152,4 +153,5 @@ Primary references: GNU Emacs Manual sections on the
 [mark](https://www.gnu.org/software/emacs/manual/html_node/emacs/Setting-Mark.html),
 [incremental search](https://www.gnu.org/software/emacs/manual/html_node/emacs/Incremental-Search.html),
 [saving](https://www.gnu.org/software/emacs/manual/html_node/emacs/Save-Commands.html),
+[auto-saving](https://www.gnu.org/software/emacs/manual/html_node/emacs/Auto-Save-Files.html),
 and [help](https://www.gnu.org/software/emacs/manual/html_node/emacs/Help.html).

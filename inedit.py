@@ -18,7 +18,7 @@ import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterator
@@ -53,6 +53,7 @@ from prompt_toolkit.widgets import SearchToolbar, TextArea
 MINIMUM_HEIGHT = 4
 AUTO_MINIMUM_TEXT_ROWS = 7
 AUTO_MAXIMUM_TEXT_ROWS = 20
+AUTO_SAVE_INTERVAL_SECONDS = 30.0
 HEIGHT_MESSAGE_SECONDS = 1.0
 SIGNAL_DISCARD_MESSAGE = "Unsaved changes; interrupt again to discard"
 EXIT_PROMPT = "Save modified buffer? Y Yes | N No | ^C Cancel"
@@ -63,6 +64,10 @@ File
   Ctrl-S        Save and continue editing
   Ctrl-C        Same as Ctrl-X; cancel an active exit prompt
   Ctrl-G        Close this help
+
+Recovery
+  Every 30 sec  Copy a modified buffer to private #filename#
+  Explicit save removes this session's recovery file
 
 Display
   Alt-Up        Reduce the editor height by one row
@@ -117,6 +122,10 @@ File (all modes)
   Ctrl-S        Save and continue editing
   Ctrl-C        Same as Ctrl-X; cancel an active exit prompt
   Ctrl-G        Close this help
+
+Recovery (all modes)
+  Every 30 sec  Copy a modified buffer to private #filename#
+  Explicit save removes this session's recovery file
 
 Display (all modes)
   Alt-Up        Reduce the editor height by one row
@@ -200,6 +209,10 @@ class SaveError(IneditError):
     """A document could not be saved safely."""
 
 
+class AutoSaveError(IneditError):
+    """A recovery auto-save file could not be updated safely."""
+
+
 class ConflictError(SaveError):
     """The file or its path changed after it was loaded."""
 
@@ -264,6 +277,20 @@ class FinalSummary:
     byte_count: int | None
 
 
+@dataclass(frozen=True)
+class AutoSaveSnapshot:
+    path: Path
+    fingerprint: Fingerprint
+
+
+@dataclass
+class AutoSaveState:
+    snapshot: AutoSaveSnapshot | None = None
+    text: str | None = None
+    disabled: bool = False
+    error: str | None = None
+
+
 @dataclass
 class EditorState:
     document: Document
@@ -279,6 +306,7 @@ class EditorState:
     effective_height: int = AUTO_MINIMUM_TEXT_ROWS + 1
     saved_during_session: bool = False
     final_summary: FinalSummary | None = None
+    auto_save: AutoSaveState = field(default_factory=AutoSaveState)
 
     def is_modified(self, current_text: str) -> bool:
         return current_text != self.original_text
@@ -334,8 +362,10 @@ def parse_args(
         prog="inedit.py",
         description="Edit one UTF-8 file in a bounded inline terminal UI.",
         epilog=(
-            "Saving atomically replaces the target inode; hard-link identity, "
-            "ownership, ACLs, and extended attributes are not preserved."
+            "Modified buffers receive a private #filename# recovery snapshot "
+            "every 30 seconds. Saving atomically replaces the target inode; "
+            "hard-link identity, ownership, ACLs, and extended attributes are "
+            "not preserved."
         ),
     )
     parser.add_argument(
@@ -552,11 +582,12 @@ def _check_conflict(document: Document) -> None:
 def _create_temporary_sibling(target_path: Path) -> tuple[int, Path]:
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
     for _ in range(100):
         name = f".inedit-{os.getpid()}-{secrets.token_hex(8)}.tmp"
         temporary_path = target_path.parent / name
         try:
-            descriptor = os.open(temporary_path, flags, 0o666)
+            descriptor = os.open(temporary_path, flags, 0o600)
         except FileExistsError:
             continue
         return descriptor, temporary_path
@@ -570,6 +601,19 @@ def _write_all(descriptor: int, data: bytes) -> None:
         if written <= 0:
             raise OSError("short write while saving")
         remaining = remaining[written:]
+
+
+def _new_file_mode() -> int:
+    """Return the mode that creating a regular 0666 file would produce."""
+
+    # Python has no read-only umask operation. Temporarily making it maximally
+    # restrictive is safer than setting it to zero if another thread happens
+    # to create a file during this very small window.
+    previous_umask = os.umask(0o777)
+    try:
+        return 0o666 & ~previous_umask
+    finally:
+        os.umask(previous_umask)
 
 
 def save_document(document: Document, text: str) -> Document:
@@ -592,11 +636,11 @@ def save_document(document: Document, text: str) -> Document:
     temporary_path: Path | None = None
     saved_fingerprint: Fingerprint | None = None
     saved_mode: int | None = None
+    final_mode = document.mode if document.mode is not None else _new_file_mode()
     try:
         descriptor, temporary_path = _create_temporary_sibling(document.target_path)
         _write_all(descriptor, encoded)
-        if document.mode is not None:
-            os.fchmod(descriptor, document.mode)
+        os.fchmod(descriptor, final_mode)
         os.fsync(descriptor)
         saved_stat = os.fstat(descriptor)
         saved_fingerprint = _fingerprint(saved_stat)
@@ -645,6 +689,112 @@ def save_document(document: Document, text: str) -> Document:
         fingerprint=saved_fingerprint,
         entry_fingerprint=entry_fingerprint,
     )
+
+
+def auto_save_path(document: Document) -> Path:
+    """Return the Emacs-style recovery filename for a document."""
+
+    name = document.requested_path.name
+    return document.requested_path.with_name(f"#{name}#")
+
+
+def write_auto_save(
+    document: Document,
+    text: str,
+    previous: AutoSaveSnapshot | None = None,
+) -> AutoSaveSnapshot:
+    """Atomically write one private recovery snapshot without touching FILE."""
+
+    encoded = encode_document(document, text)
+    path = auto_save_path(document)
+    if previous is not None and previous.path != path:
+        raise AutoSaveError("auto-save path changed; refusing to overwrite")
+
+    descriptor: int | None = None
+    temporary_path: Path | None = None
+    saved_fingerprint: Fingerprint | None = None
+    try:
+        descriptor, temporary_path = _create_temporary_sibling(path)
+        _write_all(descriptor, encoded)
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+        saved_fingerprint = _fingerprint(os.fstat(descriptor))
+        os.close(descriptor)
+        descriptor = None
+
+        current = _lstat_optional(path)
+        if previous is None:
+            if current is not None:
+                raise AutoSaveError(
+                    f"auto-save file already exists; preserving {path}"
+                )
+            try:
+                # Linking installs a complete first snapshot without ever
+                # replacing a recovery file from an earlier session.
+                os.link(temporary_path, path)
+            except FileExistsError as exc:
+                raise AutoSaveError(
+                    f"auto-save file already exists; preserving {path}"
+                ) from exc
+            try:
+                temporary_path.unlink()
+            except OSError:
+                # The complete #name# snapshot is already installed. The
+                # finally block gets one more chance to remove this private
+                # hard-link sibling without misreporting auto-save failure.
+                pass
+            else:
+                temporary_path = None
+        else:
+            current_fingerprint = _fingerprint(current) if current else None
+            if current_fingerprint != previous.fingerprint:
+                raise AutoSaveError(
+                    f"auto-save file changed; preserving {path}"
+                )
+            os.replace(temporary_path, path)
+            temporary_path = None
+    except (SaveError, AutoSaveError):
+        raise
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise AutoSaveError(f"could not auto-save {path}: {detail}") from exc
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+    assert saved_fingerprint is not None
+    return AutoSaveSnapshot(path, saved_fingerprint)
+
+
+def remove_auto_save(snapshot: AutoSaveSnapshot) -> None:
+    """Remove only the recovery file represented by this session's snapshot."""
+
+    try:
+        current = _lstat_optional(snapshot.path)
+        if current is None:
+            return
+        if _fingerprint(current) != snapshot.fingerprint:
+            raise AutoSaveError(
+                f"auto-save file changed; preserving {snapshot.path}"
+            )
+        snapshot.path.unlink()
+    except AutoSaveError:
+        raise
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise AutoSaveError(
+            f"could not remove auto-save {snapshot.path}: {detail}"
+        ) from exc
 
 
 def effective_height(configured_height: int, terminal_rows: int) -> int:
@@ -861,7 +1011,8 @@ def format_status(
     """Format the one-row status, dropping redundant text when necessary."""
 
     filename = _one_line(state.document.display_path)
-    message = _one_line(state.message) if state.message else ""
+    displayed_message = state.message or state.auto_save.error
+    message = _one_line(displayed_message) if displayed_message else ""
     modified = state.is_modified(current_text)
     marker = "**" if modified else "--"
     status_word = "modified" if modified else "unchanged"
@@ -1051,8 +1202,51 @@ def build_application(
             state.message = "Saved"
         else:
             state.message = "No changes to save"
+
+        if state.auto_save.snapshot is not None:
+            try:
+                remove_auto_save(state.auto_save.snapshot)
+            except AutoSaveError as exc:
+                state.auto_save.error = (
+                    f"Auto-save cleanup failed: {_one_line(str(exc))}"
+                )
+            else:
+                state.auto_save = AutoSaveState()
+        elif state.auto_save.disabled:
+            # An explicit save is a useful point to retry auto-saving if the
+            # user modifies the buffer again (for example, after moving a
+            # stale recovery file out of the way in another terminal).
+            state.auto_save = AutoSaveState()
         event.app.invalidate()
         return True
+
+    async def auto_save_loop(application: Application[EditorResult]) -> None:
+        while True:
+            await asyncio.sleep(AUTO_SAVE_INTERVAL_SECONDS)
+            if application.is_done or state.auto_save.disabled:
+                return
+            current_text = text_area.buffer.text
+            if (
+                not state.is_modified(current_text)
+                or current_text == state.auto_save.text
+            ):
+                continue
+            try:
+                snapshot = write_auto_save(
+                    state.document,
+                    current_text,
+                    state.auto_save.snapshot,
+                )
+            except (SaveError, AutoSaveError) as exc:
+                state.auto_save.disabled = True
+                state.auto_save.error = (
+                    f"Auto-save disabled: {_one_line(str(exc))}"
+                )
+            else:
+                state.auto_save.snapshot = snapshot
+                state.auto_save.text = current_text
+                state.auto_save.error = None
+            application.invalidate()
 
     @bindings.add("c-s", filter=~is_searching, eager=True)
     def save(event: Any) -> None:
@@ -1564,6 +1758,11 @@ def build_application(
         input=input,
         output=output,
     )
+
+    def start_auto_save() -> None:
+        application.create_background_task(auto_save_loop(application))
+
+    application.pre_run_callables.append(start_auto_save)
 
     initialize_vi_mode(application)
     application_reference.append(application)

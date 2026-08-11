@@ -12,6 +12,11 @@ most recent adjustment. With no explicit height, the editor automatically uses
 the final viewport remains in terminal history with a plain saved, unchanged,
 or discarded summary in place of the live status bar.
 
+Modified buffers now receive a private Emacs-style `#filename#` recovery
+snapshot every 30 seconds. Explicit save removes a snapshot owned by the
+current session; discard or abnormal termination leaves it available for
+manual recovery.
+
 The implementation uses **prompt_toolkit**, not raw terminal escape sequences,
 and targets prompt-toolkit `>=3.0.36,<4`. That baseline provides a multiline
 `TextArea`, fixed dimensions, Emacs and vi editing modes, custom key bindings,
@@ -39,15 +44,14 @@ that belong in the roadmap.
 
 ### Save confidentiality and correctness
 
-The save transaction needs two correctness fixes before broader promotion.
-First, its temporary sibling is currently created with mode `0666` subject to
-the umask, receives the document bytes, and only afterward receives the old
-file's permission bits. With a common `022` umask this can briefly expose a
-private file through a mode-`0644` sibling in a directory another local user can
-watch. Every temporary copy must be private before any content is written, and
-it must remain private if a crash leaves it behind.
+The first confidentiality blocker is fixed: a save transaction now creates its
+random sibling without group or other access, writes the content, and only then
+applies the existing file's mode or the new file's umask-derived mode. Recovery
+auto-saves are also private mode `0600` files and never overwrite a pre-existing
+`#filename#` that might contain work from another session.
 
-Second, an explicit save of a new empty buffer does not create the file because
+One immediate correctness fix remains. An explicit save of a new empty buffer
+does not create the file because
 the buffer compares equal to its initial empty text. `Ctrl-S` and vi `:w`
 should create a zero-byte target; merely opening and canceling it should not.
 The behavior of unchanged exit and `ZZ` on a new empty target needs an explicit
@@ -416,6 +420,9 @@ line. The user can correct the problem, retry, or cancel.
   bare carriage returns should be rejected rather than silently normalized.
 - The presence or absence of a final newline is part of the editable content.
 - Symlinks are followed so saving does not replace the symlink itself.
+- A dirty buffer is copied every 30 seconds to a private `#filename#` recovery
+  sibling. Explicit save removes a session-owned snapshot; discard and
+  abnormal exit preserve it. Existing recovery files are never overwritten.
 
 Saving should provide atomic visibility: encode the complete new content first,
 write it to a private temporary sibling, flush and `fsync` it, apply the
@@ -456,10 +463,12 @@ The first implementation is one importable script with small testable units:
   and the file-change fingerprint.
 - `save_document()` performs conflict checking and atomic replacement, then
   returns the refreshed document snapshot needed for another save.
+- `write_auto_save()` and `remove_auto_save()` maintain a fingerprinted,
+  mode-`0600` `#filename#` recovery snapshot without mutating the target.
 - `EditorState` tracks the document, original text, automatic-height mode,
   requested and effective heights, transient views and prompts, status message,
-  armed discard confirmation, successful-write history, and prepared final
-  summary.
+  armed discard confirmation, successful-write history, recovery snapshot and
+  warning state, and prepared final summary.
 - `build_application()` constructs the editing/help/command areas, search
   toolbar, status control, conditional layout, styles, and key bindings.
 - `main()` performs preflight checks, runs the application, and maps outcomes to
@@ -514,11 +523,12 @@ editing behavior.
 
 The current unit suite covers fixed and automatic height parsing, content-driven
 growth, manual adjustment, UTF-8/BOM and newline handling, direct new-file
-creation, permission-bit preservation, common conflict detection, replacement
-failure cleanup, keymaps, help, search, clipboard operations, save prompts,
-external handoff, and exit summaries. One known gap is important enough to call
-out twice: direct `save_document()` can create a new empty file, but the UI does
-not call it for an initially empty unchanged buffer.
+creation, private temporary-file creation, permission-bit and new-file umask
+behavior, common conflict detection, replacement failure cleanup, periodic
+private recovery snapshots, keymaps, help, search, clipboard operations, save
+prompts, external handoff, and exit summaries. One known gap is important
+enough to call out twice: direct `save_document()` can create a new empty file,
+but the UI does not call it for an initially empty unchanged buffer.
 
 Prompt behavior is exercised through prompt_toolkit pipe input and dummy output.
 The POSIX PTY suite currently covers an 80x24 terminal, a sentinel above the
@@ -559,7 +569,8 @@ for filenames containing spaces.
 - Mouse selection. System-clipboard integration is now a near-term roadmap
   item, but must remain optional and terminal-safe.
 - Arbitrary encodings or binary-file editing.
-- Remote files, file locking protocols, swap files, or crash recovery.
+- Remote files, file locking protocols, swap files, or automatic recovery-file
+  discovery and selection beyond the private `#filename#` snapshot.
 - A full-screen fallback. If inline rendering cannot be established safely,
   exit with an error instead.
 
@@ -567,6 +578,7 @@ for filenames containing spaces.
 
 - [GNU Nano command cheat sheet](https://www.nano-editor.org/dist/latest/cheatsheet.html)
 - [OpenBSD `mg` manual](https://man.openbsd.org/mg)
+- [GNU Emacs auto-save files](https://www.gnu.org/software/emacs/manual/html_node/emacs/Auto-Save-Files.html)
 - [prompt_toolkit API reference](https://python-prompt-toolkit.readthedocs.io/en/stable/pages/reference.html)
 - [Textual inline application explanation and editor example](https://textual.textualize.io/blog/2024/04/20/behind-the-curtain-of-inline-terminal-applications/)
 - [Textual `TextArea` documentation](https://textual.textualize.io/widgets/text_area/)

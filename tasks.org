@@ -7,15 +7,17 @@
 Broader =$EDITOR= claims depend on explicit privacy, durability, metadata, and
 concurrency semantics.
 
-*** TODO [#A] t0001.1 Keep temporary save files private from creation through replacement
+*** DONE [#A] t0001.1 Keep temporary save files private from creation through replacement
 Why: the =0666=-before-=chmod= path can briefly expose private contents under a
-common umask.  Done: create siblings private before writing, apply the final
-mode only afterward, and test private, permissive, new, and practical ACL cases.
+common umask.  Done: create siblings with no group or other access, apply the
+intended final mode only after writing, preserve permissive existing modes and
+umask-derived new-file modes, and leave ACL policy to t0001.5.
 
 *** TODO [#A] t0001.2 Define safe handling for stale save siblings after a crash
-Why: =SIGKILL= or power loss can leave =.inedit-*.tmp= behind.  Done: make every
-remnant private and document whether startup reports, recovers, or ignores it;
-any cleanup must validate the exact file rather than use a broad pattern.
+Why: =SIGKILL= or power loss can leave =.inedit-*.tmp= behind.  These remnants
+are now private; still document whether startup reports or ignores them.  Any
+cleanup must validate the exact file rather than use a broad pattern, and must
+not confuse them with intentional =#filename#= recovery snapshots.
 
 *** TODO [#A] t0001.3 Make an explicit save create a new empty file
 Why: a nonexistent target currently compares equal to its initial empty buffer.
@@ -41,6 +43,12 @@ remaining race and lack of locking, and test whichever guarantee is claimed.
 Why: write, permission, sync, close, and cleanup boundaries remain lightly
 tested.  Done: inject failures at each meaningful point and assert the target
 bytes, sibling state, and truthful post-replacement error report.
+
+*** DONE [#A] t0001.8 Add private Emacs-style recovery auto-saves
+Why: atomic explicit saving does not protect edits lost to a crash or signal.
+Done: every 30 seconds, atomically copy a dirty buffer to private =#filename#=;
+remove a session-owned snapshot after explicit save, preserve it after discard
+or abnormal exit, and never overwrite a pre-existing recovery file.
 
 ** TODO [#A] t0002 Harden terminal startup, shutdown, and caller interoperability  :terminal:
 Prompt-toolkit owns the live UI, but the cursor probe, retained screen, signals,
@@ -136,7 +144,8 @@ large input can freeze or exhaust the UI.
 *** TODO [#B] t0005.2 Publish a precise compatibility statement
 Why: =inedit= is not complete Nano, Emacs, or vi.  Done: describe its
 prompt-toolkit/Emacs editing and Nano lifecycle split, limited vi/Ex mode,
-UTF-8 regular-file scope, one-entry clipboard, and lack of locking/recovery.
+UTF-8 regular-file scope, one-entry clipboard, limited recovery auto-save, and
+lack of locking or an automatic recovery UI.
 
 *** TODO [#C] t0005.3 Implement search and replace after release blockers
 Why: replacement is the largest ordinary editing gap but not a release blocker.
@@ -262,12 +271,63 @@ Use a concise user-visible change format tied to release tags.  Record breaking
 behavior, fixes, and migration notes rather than duplicating the LLM work log or
 raw commit history.
 
-** TODO [#B] t0014 Handle basic special characters
+** TODO [#B] t0014 Display tabs and control characters safely  :editing:display:
+Keep these characters unchanged in the buffer and on disk; this is a rendering
+task, not permission to silently normalize file contents.
 
-*** TODO [#B] t0014.1 Ensure "^I" shows up more like a normal tab
-I'm guessing 8-space tabs would be easiest, but I personally prefer
-4-space tabs.  If prompt_toolkit has a default, I think I want to use
-that.
+*** TODO [#B] t0014.1 Render literal tabs at four-column tab stops
+Recommendation: use prompt-toolkit's =TabsProcessor= with its default
+=tabstop=4=, but explicitly select spaces instead of the processor's visible
+tab-marker glyphs.  This stays on prompt-toolkit's cursor-mapping path and
+matches the preferred width without replacing tabs with spaces.
 
-** TODO [#B] t0015 Allow startup with no file
-Perhaps call the empty buffer "*scratch*", or maybe do whatever nano/joe/etc do
+Done: tabs advance to the next four-column stop, remain literal =\t= bytes when
+saved, and behave correctly with the gutter, cursor, selection, search,
+horizontal scrolling, undo, and wide Unicode characters.
+
+*** TODO [#C] t0014.2 Audit the display of the remaining control characters
+Why: raw terminal controls must never be emitted, but inventing replacements
+without a concrete need could make files harder to understand.  Retain
+prompt-toolkit's visible caret notation where it is safe and unambiguous.
+
+Done: document the behavior for C0 controls, escape, and delete; prove that
+editing and saving preserve them and that rendering cannot execute them.  Share
+the adversarial coverage with t0006.4 rather than building a second framework.
+
+** TODO [#B] t0015 Allow startup with no file  :cli:editing:
+Recommendation: show =[New Buffer]= rather than Emacs's =*scratch*=.  The latter
+usually names a deliberately non-file buffer, while this feature creates an
+unnamed document that is expected to acquire a filename on its first save.
+Do not make =-= mean standard input/output as part of this task.
+
+This depends on t0001.3 and must reuse the hardened save transaction rather
+than introduce a separate write path.
+
+*** TODO [#B] t0015.1 Introduce an explicit unnamed-document state
+Make =FILE= optional, start with a clean empty buffer, and use =[New Buffer]= in
+the footer and exit summary until a path is chosen.  An untouched buffer exits
+without a save prompt; editing it follows the ordinary modified-buffer flow.
+
+Done: distinguish omitted =FILE= from a literal path, keep multiple positional
+arguments invalid, and test both Emacs and vi modes without weakening the
+existing path, UTF-8, and regular-file checks.
+
+*** TODO [#B] t0015.2 Add one safe first-save destination workflow
+=Ctrl-S= and a Yes response at the modified-exit prompt should open the same
+cancelable filename prompt.  Resolve relative names against the startup working
+directory, reject invalid targets cleanly, and require explicit confirmation
+before replacing an existing file.
+
+Done: cancellation leaves the document dirty and unnamed; success assigns the
+path, creates even an empty file, refreshes conflict state, and makes later
+saves use the ordinary transaction.  Test empty and unusual names, existing
+targets, permissions, cancellation at each stage, and save failures.
+
+*** TODO [#B] t0015.3 Define the corresponding vi-mode save behavior
+Recommendation: follow vi here.  Support =:w FILE= and =:wq FILE= for an
+unnamed buffer; a pathless =:w=, =:wq=, or =ZZ= reports that no filename exists
+and remains open.  The global =Ctrl-S= command can still offer the Nano-like
+filename prompt from t0015.2.
+
+Done: Help describes the chosen rule and PTY tests cover successful, canceled,
+and failed first saves plus every save-and-exit command.

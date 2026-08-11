@@ -8,10 +8,11 @@ Unicode-aware rendering, scrolling, and basic editing. `inedit.py` owns the
 command line, document format, file-conflict policy, atomic save transaction,
 editor state, status line, and process exit status.
 
-The central safety rule is simple: loading and editing are read-only. The only
-code allowed to mutate the target is the final commit step in
-`save_document()`. Cancellation, validation errors, conflicts, signals, and
-exceptions never call that step.
+The central safety rule is simple: loading and editing never mutate the target.
+The only code allowed to do so is the final commit step in `save_document()`.
+Recovery auto-saving writes only the separate `#filename#` companion.
+Cancellation, validation errors, conflicts, signals, and exceptions never call
+the target commit step.
 
 ## Delivery shape
 
@@ -55,6 +56,18 @@ class Document:
     fingerprint: Fingerprint | None
     entry_fingerprint: Fingerprint | None
 
+@dataclass(frozen=True)
+class AutoSaveSnapshot:
+    path: Path
+    fingerprint: Fingerprint
+
+@dataclass
+class AutoSaveState:
+    snapshot: AutoSaveSnapshot | None = None
+    text: str | None = None
+    disabled: bool = False
+    error: str | None = None
+
 @dataclass
 class EditorState:
     document: Document
@@ -70,6 +83,7 @@ class EditorState:
     effective_height: int = 8
     saved_during_session: bool = False
     final_summary: FinalSummary | None = None
+    auto_save: AutoSaveState = field(default_factory=AutoSaveState)
 
     def is_modified(self, current_text: str) -> bool: ...
 
@@ -213,6 +227,11 @@ erase behavior. A controlled exit changes it to false only after preparing the
 final summary described below. In vi mode, the `on_reset` handler must select
 `InputMode.NAVIGATION` because prompt-toolkit otherwise resets every
 application run to Insert mode.
+
+Register the periodic recovery loop through
+`Application.pre_run_callables` and create it with
+`Application.create_background_task()` so prompt-toolkit cancels and joins it
+during application teardown.
 
 ### Resize behavior
 
@@ -485,12 +504,12 @@ construction before it creates a temporary file:
    For a new target, no target may now exist. Any mismatch is a conflict and
    leaves the editor open.
 4. Create a randomly named temporary sibling with `os.open()` using
-   `O_CREAT | O_EXCL | O_WRONLY`. Use mode `0o666` for a new file so the
-   process umask applies normally. For an existing file, call `os.fchmod()`
-   with the recorded permission bits.
-5. Write all encoded bytes, checking for short writes, flush, call
-   `os.fsync()`, and capture the descriptor's final fingerprint and mode before
-   closing it. No target mutation has occurred yet.
+   `O_CREAT | O_EXCL | O_WRONLY` and mode `0o600`. No group or other access may
+   exist while content is written, even when the process umask is permissive.
+5. Write all encoded bytes, checking for short writes. Apply the recorded mode
+   for an existing file or the process-umask-derived `0666` mode for a new
+   file, call `os.fsync()`, and capture the descriptor's final fingerprint and
+   mode before closing it. No target mutation has occurred yet.
 6. Run the conflict check again immediately before commit to narrow the race
    window.
 7. Commit with `os.replace(temp_path, target_path)`. Because `target_path` is
@@ -513,6 +532,32 @@ race between the final check and `os.replace()`. File locking protocols are a
 version-1 non-goal and this limitation should remain explicit. Atomic replace
 also intentionally does not preserve hard-link identity, extended attributes,
 ACLs, or ownership beyond what the process and operating system provide.
+
+## Recovery auto-save transaction
+
+For a requested path ending in `foo.txt`, `auto_save_path()` returns the
+caller-visible sibling `#foo.txt#`, matching Emacs's normal convention. The
+path is based on `requested_path`, not a resolved symlink target. Every 30
+seconds, the application writes only when the buffer is dirty and differs from
+the last recovery snapshot.
+
+`write_auto_save()` encodes text with the document's existing UTF-8 BOM and
+newline policy, writes and `fsync()`s a random mode-`0600` sibling, and applies
+mode `0600` explicitly. The first complete snapshot is installed with a hard
+link so an existing recovery path cannot be replaced; later snapshots use
+`os.replace()` only after the path fingerprint still matches the snapshot
+owned by this session. The target file and its conflict fingerprint are never
+changed by recovery auto-saving.
+
+An explicit save calls `remove_auto_save()` after the target transaction has
+succeeded (or after an explicit no-op save). Removal occurs only when the
+current recovery fingerprint matches this session's latest snapshot. Cleanup
+failure must never turn an already successful target save into a reported save
+failure. Discard, `SIGINT`, `SIGTERM`, `SIGHUP`, and unexpected failure leave
+the latest recovery file in place. A pre-existing or externally replaced
+`#filename#` is preserved, disables further auto-saving for that dirty buffer,
+and produces a persistent status warning; there is no automatic recovery UI
+yet.
 
 ## Signals, exceptions, and exit statuses
 
@@ -550,10 +595,14 @@ Use temporary directories for every filesystem test. Unit-test:
 - existing files, new files, symlinks, dangling symlinks, and rejected types;
 - unchanged Ctrl-S avoiding a write and remaining in the editor;
 - repeated saves, including through a symlink, refreshing conflict snapshots;
-- permission preservation and umask-respecting new-file creation;
+- private pre-write temporary modes, permission preservation, and
+  umask-respecting new-file creation;
 - conflict detection for content changes, replacement, deletion, creation,
   and symlink retargeting;
 - temporary-file cleanup on write, fsync, and replace failures;
+- exact `#filename#` recovery naming, mode `0600`, format-preserving updates,
+  ownership checks, explicit-save cleanup, and preservation of pre-existing
+  or externally changed snapshots;
 - dirty-state reversal through undo, the two-stage SIGINT state machine, and
   the shared Ctrl-X/Ctrl-C `Y`/`N`/Ctrl-C prompt;
 - final-summary outcome selection, exact on-disk byte counts, prior-save and
@@ -566,9 +615,9 @@ Use temporary directories for every filesystem test. Unit-test:
 Use prompt_toolkit pipe input and dummy output for key-binding tests. Send text,
 Enter, selection, native cut/copy/yank, undo/redo, mode-specific help,
 forward/reverse/repeated search, vi Ex commands, `ZZ`, `Alt-Up`/`Alt-Down`,
-save, prompted exit, and cancel as actual input bytes and assert the
-application result, buffer, clipboard, search state, height state, and target
-bytes.
+periodic auto-save, explicit recovery cleanup, prompted exit, and cancel as
+actual input bytes and assert the application result, buffer, clipboard,
+search state, height state, target bytes, and recovery bytes.
 
 Add PTY tests for behavior that dummy output cannot prove:
 

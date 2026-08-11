@@ -294,9 +294,31 @@ save/discard prompt instead of vi-style `:q` behavior.
   carriage returns are rejected.
 - The final newline is preserved as editable content.
 - Saving follows symlinks rather than replacing the symlink itself.
-- Saving is atomic and preserves existing permission bits.
+- Atomic-save siblings are private while content is written. Saving preserves
+  existing permission bits, while a new file receives the mode implied by the
+  process umask.
 - If another process changes the file after it is opened, saving is refused
   and the editor remains open.
+
+## Recovery auto-saves
+
+While the buffer is modified, `inedit` writes a recovery snapshot every 30
+seconds without changing the file being edited. It follows Emacs's usual
+naming convention: edits to `foo.txt` are copied to `#foo.txt#` in the same
+directory. The recovery file is always mode `0600`, preserves the document's
+UTF-8 BOM and newline format, and is installed and updated atomically.
+
+An explicit save—including `Ctrl-S`, a `Y` response at the exit prompt, `:w`,
+`:wq`, or `ZZ`—removes a recovery file created by this session. Discarding the
+buffer or terminating abnormally leaves the latest snapshot for manual
+recovery. A process killed before the first 30-second interval may not have
+created one.
+
+`inedit` never overwrites a pre-existing `#filename#`, because it may contain
+work from an earlier session. Instead, it preserves that file, disables
+auto-saving for the current edit, and reports the problem in the status line.
+There is not yet an automatic recovery prompt; inspect, move, or remove the
+recovery file explicitly.
 
 ## Exit statuses
 
@@ -316,8 +338,8 @@ signal handlers, and cursor visibility before returning control to the caller.
 
 - No direct system-clipboard integration.
 - Search and replace is planned but not yet implemented.
-- No syntax highlighting, mouse selection, multiple files, or crash-recovery
-  file.
+- No syntax highlighting, mouse selection, multiple files, or automatic
+  recovery-file selection.
 
 ## Contributing
 

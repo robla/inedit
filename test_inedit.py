@@ -146,6 +146,38 @@ class DocumentTests(unittest.TestCase):
 
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
 
+    def test_temporary_save_sibling_is_private_before_content_is_written(
+        self,
+    ) -> None:
+        path = self.directory / "permissive.txt"
+        path.write_text("old", encoding="utf-8")
+        path.chmod(0o666)
+        document = inedit.load_document(path)
+        observed_modes: list[int] = []
+        real_write_all = inedit._write_all
+
+        def inspect_mode_before_write(descriptor: int, data: bytes) -> None:
+            observed_modes.append(stat.S_IMODE(os.fstat(descriptor).st_mode))
+            real_write_all(descriptor, data)
+
+        with mock.patch("inedit._write_all", side_effect=inspect_mode_before_write):
+            inedit.save_document(document, "private while temporary")
+
+        self.assertEqual(len(observed_modes), 1)
+        self.assertEqual(observed_modes[0] & 0o077, 0)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o666)
+
+    def test_new_file_final_mode_still_honors_the_process_umask(self) -> None:
+        path = self.directory / "new-mode.txt"
+        document = inedit.load_document(path)
+        previous_umask = os.umask(0o027)
+        try:
+            inedit.save_document(document, "content")
+        finally:
+            os.umask(previous_umask)
+
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
+
     def test_external_content_change_is_a_conflict(self) -> None:
         path = self.directory / "conflict.txt"
         path.write_text("original", encoding="utf-8")
@@ -242,6 +274,87 @@ class DocumentTests(unittest.TestCase):
 
         self.assertEqual(path.read_text(encoding="utf-8"), "second")
         self.assertEqual(document.text, "second")
+
+
+class AutoSaveTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temporary_directory.name)
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def test_auto_save_uses_emacs_name_private_mode_and_document_encoding(
+        self,
+    ) -> None:
+        path = self.directory / "foo.txt"
+        path.write_bytes(codecs.BOM_UTF8 + b"old\r\n")
+        document = inedit.load_document(path)
+
+        snapshot = inedit.write_auto_save(document, "first\n")
+
+        self.assertEqual(snapshot.path, self.directory / "#foo.txt#")
+        self.assertEqual(
+            snapshot.path.read_bytes(),
+            codecs.BOM_UTF8 + b"first\r\n",
+        )
+        self.assertEqual(stat.S_IMODE(snapshot.path.stat().st_mode), 0o600)
+        self.assertEqual(path.read_bytes(), codecs.BOM_UTF8 + b"old\r\n")
+
+        snapshot = inedit.write_auto_save(document, "second\n", snapshot)
+        self.assertEqual(
+            snapshot.path.read_bytes(),
+            codecs.BOM_UTF8 + b"second\r\n",
+        )
+        self.assertEqual(stat.S_IMODE(snapshot.path.stat().st_mode), 0o600)
+
+        inedit.remove_auto_save(snapshot)
+        self.assertFalse(snapshot.path.exists())
+
+    def test_preexisting_auto_save_is_never_overwritten(self) -> None:
+        path = self.directory / "foo.txt"
+        path.write_text("original", encoding="utf-8")
+        recovery_path = self.directory / "#foo.txt#"
+        recovery_path.write_text("older recovery", encoding="utf-8")
+        document = inedit.load_document(path)
+
+        with self.assertRaisesRegex(inedit.AutoSaveError, "already exists"):
+            inedit.write_auto_save(document, "new edit")
+
+        self.assertEqual(recovery_path.read_text(encoding="utf-8"), "older recovery")
+        self.assertEqual(list(self.directory.glob(".inedit-*.tmp")), [])
+
+    def test_auto_save_name_follows_the_requested_symlink_name(self) -> None:
+        target = self.directory / "target.txt"
+        target.write_text("original", encoding="utf-8")
+        link = self.directory / "visible.txt"
+        link.symlink_to(target.name)
+        document = inedit.load_document(link)
+
+        snapshot = inedit.write_auto_save(document, "recovery")
+
+        self.assertEqual(snapshot.path, self.directory / "#visible.txt#")
+        self.assertEqual(snapshot.path.read_text(encoding="utf-8"), "recovery")
+        self.assertFalse((self.directory / "#target.txt#").exists())
+        self.assertEqual(target.read_text(encoding="utf-8"), "original")
+
+    def test_changed_auto_save_is_preserved_on_update_and_cleanup(self) -> None:
+        path = self.directory / "foo.txt"
+        path.write_text("original", encoding="utf-8")
+        document = inedit.load_document(path)
+        snapshot = inedit.write_auto_save(document, "first edit")
+        snapshot.path.write_text("external recovery", encoding="utf-8")
+
+        with self.assertRaisesRegex(inedit.AutoSaveError, "changed"):
+            inedit.write_auto_save(document, "second edit", snapshot)
+        with self.assertRaisesRegex(inedit.AutoSaveError, "changed"):
+            inedit.remove_auto_save(snapshot)
+
+        self.assertEqual(
+            snapshot.path.read_text(encoding="utf-8"),
+            "external recovery",
+        )
+        self.assertEqual(list(self.directory.glob(".inedit-*.tmp")), [])
 
 
 class LayoutAndStateTests(unittest.TestCase):
@@ -1233,6 +1346,144 @@ class LayoutAndStateTests(unittest.TestCase):
         result, _editor = self.run_editor(path, "one\x13two\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "onetwo")
+
+    def test_periodic_auto_save_survives_discard_without_changing_target(
+        self,
+    ) -> None:
+        import asyncio
+
+        path = self.directory / "foo.txt"
+        path.write_text("original", encoding="utf-8")
+        recovery_path = self.directory / "#foo.txt#"
+        document = inedit.load_document(path)
+        with create_pipe_input() as pipe:
+            editor = inedit.build_application(
+                document,
+                self.options(path),
+                input=pipe,
+                output=DummyOutput(),
+            )
+
+            async def wait_for_auto_save_then_discard() -> None:
+                for _ in range(1000):
+                    if recovery_path.exists():
+                        pipe.send_text("\x18n")
+                        return
+                    await asyncio.sleep(0.001)
+                editor.application.exit(
+                    result=inedit.EditorResult(
+                        inedit.ExitReason.ERROR,
+                        "auto-save was not created",
+                    )
+                )
+
+            def schedule_observer() -> None:
+                editor.application.create_background_task(
+                    wait_for_auto_save_then_discard()
+                )
+
+            pipe.send_text("x")
+            with mock.patch("inedit.AUTO_SAVE_INTERVAL_SECONDS", 0.01):
+                result = editor.application.run(
+                    pre_run=schedule_observer,
+                    set_exception_handler=False,
+                )
+
+        self.assertIs(result.reason, inedit.ExitReason.CANCELED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "original")
+        self.assertEqual(recovery_path.read_text(encoding="utf-8"), "xoriginal")
+        self.assertEqual(stat.S_IMODE(recovery_path.stat().st_mode), 0o600)
+
+    def test_explicit_save_removes_periodic_auto_save(self) -> None:
+        import asyncio
+
+        path = self.directory / "foo.txt"
+        path.write_text("original", encoding="utf-8")
+        recovery_path = self.directory / "#foo.txt#"
+        document = inedit.load_document(path)
+        with create_pipe_input() as pipe:
+            editor = inedit.build_application(
+                document,
+                self.options(path),
+                input=pipe,
+                output=DummyOutput(),
+            )
+
+            async def wait_for_auto_save_then_save() -> None:
+                for _ in range(1000):
+                    if recovery_path.exists():
+                        pipe.send_text("\x13\x18")
+                        return
+                    await asyncio.sleep(0.001)
+                editor.application.exit(
+                    result=inedit.EditorResult(
+                        inedit.ExitReason.ERROR,
+                        "auto-save was not created",
+                    )
+                )
+
+            def schedule_observer() -> None:
+                editor.application.create_background_task(
+                    wait_for_auto_save_then_save()
+                )
+
+            pipe.send_text("x")
+            with mock.patch("inedit.AUTO_SAVE_INTERVAL_SECONDS", 0.01):
+                result = editor.application.run(
+                    pre_run=schedule_observer,
+                    set_exception_handler=False,
+                )
+
+        self.assertIs(result.reason, inedit.ExitReason.SAVED)
+        self.assertEqual(path.read_text(encoding="utf-8"), "xoriginal")
+        self.assertFalse(recovery_path.exists())
+
+    def test_preexisting_auto_save_disables_auto_save_and_is_reported(self) -> None:
+        import asyncio
+
+        path = self.directory / "foo.txt"
+        path.write_text("original", encoding="utf-8")
+        recovery_path = self.directory / "#foo.txt#"
+        recovery_path.write_text("recover me", encoding="utf-8")
+        document = inedit.load_document(path)
+        observed_error: list[str | None] = []
+        with create_pipe_input() as pipe:
+            editor = inedit.build_application(
+                document,
+                self.options(path),
+                input=pipe,
+                output=DummyOutput(),
+            )
+
+            async def wait_for_warning_then_discard() -> None:
+                for _ in range(1000):
+                    if editor.state.auto_save.disabled:
+                        observed_error.append(editor.state.auto_save.error)
+                        pipe.send_text("\x18n")
+                        return
+                    await asyncio.sleep(0.001)
+                editor.application.exit(
+                    result=inedit.EditorResult(
+                        inedit.ExitReason.ERROR,
+                        "auto-save warning was not displayed",
+                    )
+                )
+
+            def schedule_observer() -> None:
+                editor.application.create_background_task(
+                    wait_for_warning_then_discard()
+                )
+
+            pipe.send_text("x")
+            with mock.patch("inedit.AUTO_SAVE_INTERVAL_SECONDS", 0.01):
+                result = editor.application.run(
+                    pre_run=schedule_observer,
+                    set_exception_handler=False,
+                )
+
+        self.assertIs(result.reason, inedit.ExitReason.CANCELED)
+        self.assertEqual(recovery_path.read_text(encoding="utf-8"), "recover me")
+        self.assertIn("already exists", observed_error[0] or "")
 
     def test_tiny_resized_terminal_exits_with_error(self) -> None:
         class TinyOutput(DummyOutput):
