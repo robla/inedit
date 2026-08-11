@@ -1,4 +1,4 @@
-# `inedit` user guide
+# `inedit`
 
 `inedit.py` is a small editor that stays in the terminal's normal screen. It
 uses a bounded region below the shell prompt, leaves earlier shell output
@@ -6,12 +6,12 @@ visible, and returns control to the caller when the editing session exits. Git
 commit messages are a typical use, but it can edit any one named UTF-8 text
 file.
 
-This page documents the current behavior. Proposed changes are tracked in
-[roadmap.md](roadmap.md). Text editing follows prompt-toolkit's default Emacs
-bindings wherever practical. Nano inspires application-level controls such as
-help and the exit flow, rather than replacing the editing engine.
-The design boundary and a terse guide to Emacs's mode line are in
-[Emacs brainspace](emacs-brainspace.md).
+This page documents the current behavior. Proposed changes are tracked in the
+[roadmap](docs/roadmap.md) and [task list](tasks.org). Text editing follows
+prompt-toolkit's default Emacs bindings wherever practical. Nano inspires
+application-level controls such as help and the exit flow, rather than
+replacing the editing engine. The design boundary and a terse guide to Emacs's
+mode line are in [Emacs brainspace](docs/emacs-brainspace.md).
 
 ## Starting the editor
 
@@ -318,3 +318,12 @@ signal handlers, and cursor visibility before returning control to the caller.
 - Search and replace is planned but not yet implemented.
 - No syntax highlighting, mouse selection, multiple files, or crash-recovery
   file.
+
+## Contributing
+
+Issues and focused pull requests are welcome. Please discuss substantial
+changes first; contributions are submitted under the MIT License.
+
+## License
+
+`inedit` is available under the [MIT License](LICENSE.md).

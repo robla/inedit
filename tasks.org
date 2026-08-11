@@ -79,11 +79,11 @@ the current default or add a justified erase option, then test every exit path.
 Users should not have to infer permission, dependencies, platforms, or release
 practice from a standalone script and design notes.
 
-*** TODO [#A] t0003.1 Choose and add an open-source license
+*** DONE [#A] t0003.1 Choose and add an open-source license
 Why: public source without a license is not generally redistributable.
-Done: add the copyright holder's chosen root =LICENSE= and metadata references.
+Done: add the copyright holder's chosen root =LICENSE.md= and metadata references.
 
-*** TODO [#A] t0003.2 Add a root README aimed at prospective users and reviewers
+*** DONE [#A] t0003.2 Add a root README aimed at prospective users and reviewers
 Why: repository hosts do not treat =docs/README.md= as the landing page.
 Done: lead with Git commit editing, installation, bounded inline behavior,
 supported scope, safety limits, examples, and links to the detailed docs.

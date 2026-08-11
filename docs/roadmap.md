@@ -105,12 +105,13 @@ demonstrate a need for both policies.
 
 ### Distribution and supported scope
 
-Before inviting redistribution, add a license selected by the copyright holder,
-a root user-facing README, reproducible Python and prompt-toolkit dependency
-metadata, an installable `inedit` entry point, a version command, release notes,
-and CI. CI should exercise the minimum and newest supported Python and
-prompt-toolkit versions, claimed operating systems, static checks, and PTY tests
-where available. A disposable real-Git test should cover saved, unchanged, and
+The copyright holder selected the [MIT License](../LICENSE.md), and the
+user-facing README now lives at the repository root. Remaining distribution
+work includes reproducible Python and prompt-toolkit dependency metadata, an
+installable `inedit` entry point, a version command, release notes, and CI. CI
+should exercise the minimum and newest supported Python and prompt-toolkit
+versions, claimed operating systems, static checks, and PTY tests where
+available. A disposable real-Git test should cover saved, unchanged, and
 discarded commit-message flows rather than only imitating Git's hint.
 
 Market the program according to the behavior it can defend: a bounded inline
@@ -207,7 +208,7 @@ Use prompt-toolkit's Emacs bindings as the editing baseline. Nano is a useful
 precedent for application-level help and exit behavior, not a reason to
 replace working buffer operations. Every explicit override should satisfy an
 `inedit` lifecycle requirement or a concrete usability need and should appear
-in both in-editor help and [README.md](README.md).
+in both in-editor help and [README.md](../README.md).
 
 Current and tentative direction:
 
@@ -247,7 +248,7 @@ is mode-specific: default mode shows the Emacs-oriented bindings, while
 `--vi` shows supported vi modes, motions, operators, selections, and editing
 commands without advertising Emacs-only shortcuts. Future work should generate
 or validate its content from the intentional binding registry.
-[README.md](README.md) remains the authoritative user key reference.
+[README.md](../README.md) remains the authoritative user key reference.
 
 ### 6. Reconcile the status line with the keymap
 
@@ -381,7 +382,7 @@ current keys include:
 | `Ctrl-X` | Exit, prompting to save a modified buffer |
 | `Ctrl-C` | Same as `Ctrl-X`; cancel only while the exit prompt is active |
 
-See [README.md](README.md) for the complete current key reference.
+See [README.md](../README.md) for the complete current key reference.
 
 In `--vi` mode, prompt_toolkit owns vi insert/normal navigation, the editor
 starts in Normal mode, and the status line shows `[NORMAL]`, `[INSERT]`,
