@@ -131,11 +131,14 @@ cleanup errors so a malformed `$VISUAL`/`$EDITOR` cannot emit an asyncio
 traceback into the live UI. Document graphical editors' wait options and define
 cursor and undo behavior for a successful returned edit.
 
-Finally, reduce maintenance risk by separating application transitions from
-widget construction, validating help and documentation from one intentional
-key registry, adding useful static typing, auditing prompt-toolkit API use, and
-adding property/adversarial tests for encoding, Unicode display, paths, and
-edit/save state transitions.
+The first maintenance refactor now separates named application transitions
+from widget construction in `EditorController`, represents mutually exclusive
+views with `EditorView`, and keeps one current `Document` snapshot. Next, move
+those established layers into small internal modules while retaining
+`inedit.py` as the executable facade. Then validate help and documentation from
+one intentional key registry, add useful static typing, audit prompt-toolkit
+API use, and add property/adversarial tests for encoding, Unicode display,
+paths, and edit/save state transitions.
 
 ## Product roadmap after release blockers
 

@@ -622,7 +622,7 @@ class LayoutAndStateTests(unittest.TestCase):
         )
         self.assertEqual(inedit._display_width(status_line), 80)
 
-        state.help_visible = True
+        state.view = inedit.EditorView.HELP
         help_status = inedit.format_status(state, "", 0, 0, 80)
         self.assertIn("^G Close", help_status)
 
@@ -647,7 +647,7 @@ class LayoutAndStateTests(unittest.TestCase):
         self.assertIn("   Top L12 C7 |", modified_status)
         self.assertTrue(modified_status.endswith("| modified"))
 
-        state.exit_prompt = True
+        state.view = inedit.EditorView.EXIT_PROMPT
         prompt_status = inedit.format_status(state, "changed", 0, 0, 80)
         self.assertEqual(prompt_status, inedit.EXIT_PROMPT)
 
@@ -987,7 +987,7 @@ class LayoutAndStateTests(unittest.TestCase):
         result, editor = self.run_editor(path, "x\x07\x07y\x13\x18")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "xy")
-        self.assertFalse(editor.state.help_visible)
+        self.assertIs(editor.state.view, inedit.EditorView.EDITOR)
         self.assertIn("Ctrl-Y", editor.help_area.buffer.text)
         self.assertIn("Ctrl-R", editor.help_area.buffer.text)
         self.assertIn("F3", editor.help_area.buffer.text)
@@ -1002,7 +1002,7 @@ class LayoutAndStateTests(unittest.TestCase):
         result, editor = self.run_editor(path, "\x07\x07\x18", vi=True)
 
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
-        self.assertFalse(editor.state.help_visible)
+        self.assertIs(editor.state.view, inedit.EditorView.EDITOR)
         help_text = editor.help_area.buffer.text
         self.assertIn("inedit help (vi mode)", help_text)
         self.assertIn("Normal-mode movement", help_text)
@@ -1113,7 +1113,7 @@ class LayoutAndStateTests(unittest.TestCase):
 
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertIn("inedit help (vi mode)", editor.help_area.buffer.text)
-        self.assertFalse(editor.state.help_visible)
+        self.assertIs(editor.state.view, inedit.EditorView.EDITOR)
 
     def test_ctrl_c_cancels_vi_ex_command_without_exiting(self) -> None:
         path = self.directory / "existing.txt"
@@ -1124,7 +1124,7 @@ class LayoutAndStateTests(unittest.TestCase):
 
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "original!")
-        self.assertFalse(editor.state.ex_command_visible)
+        self.assertIs(editor.state.view, inedit.EditorView.EDITOR)
 
     def test_colon_remains_insertable_text_in_default_mode(self) -> None:
         path = self.directory / "new.txt"
@@ -1206,7 +1206,7 @@ class LayoutAndStateTests(unittest.TestCase):
 
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
         self.assertEqual(path.read_text(encoding="utf-8"), "Xone two")
-        self.assertFalse(editor.state.help_visible)
+        self.assertIs(editor.state.view, inedit.EditorView.EDITOR)
 
     def test_ctrl_c_aborts_search_without_exiting(self) -> None:
         path = self.directory / "search.txt"
@@ -1325,7 +1325,7 @@ class LayoutAndStateTests(unittest.TestCase):
         path = self.directory / "new.txt"
         result, editor = self.run_editor(path, "hello\x18y")
         self.assertIs(result.reason, inedit.ExitReason.SAVED)
-        self.assertFalse(editor.state.exit_prompt)
+        self.assertIs(editor.state.view, inedit.EditorView.EDITOR)
         self.assertEqual(path.read_text(encoding="utf-8"), "hello")
 
     def test_ctrl_x_discards_modified_buffer_on_no(self) -> None:

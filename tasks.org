@@ -161,10 +161,11 @@ explicitly opt-in, provide safe fallbacks, and never transmit text silently.
 The closure-heavy UI and parallel binding/help/doc tables are the main review
 and evolution costs.
 
-*** TODO [#B] t0006.1 Split application state transitions from widget construction
+*** DONE [#B] t0006.1 Split application state transitions from widget construction
 Why: save, exit, search, height, Ex, external edit, and final rendering share a
-large closure and several booleans.  Done: introduce small transitions or a
-controller with explicit modal states while leaving editing to prompt-toolkit.
+large closure and several booleans.  Done: =EditorController= now owns named
+transitions and widget lifecycle, =EditorView= makes modal states exclusive,
+and prompt-toolkit still owns buffer editing.
 
 *** TODO [#B] t0006.2 Make the implemented keymap the source for help and documentation
 Why: bindings, two help constants, and documentation can drift.  Done: define
@@ -180,6 +181,18 @@ the declared minimum and newest dependency versions.
 Why: generated cases can find Unicode, newline, truncation, and state-machine
 failures missed by examples.  Done: generate safe temp-directory round trips,
 paths, terminal text, and edit/undo/save sequences without emitting controls.
+
+*** TODO [#B] t0006.5 Move the established layers into small internal modules
+Why: the controller removes closure coupling, but a roughly two-thousand-line
+=inedit.py= still makes navigation and ownership harder than necessary.  Done:
+keep =inedit.py= as the executable/import facade and move model, storage,
+presentation, controller, and terminal-startup code along existing seams;
+preserve public imports and behavior while making the move mostly mechanical.
+
+*** TODO [#C] t0006.6 Split the test suite along the same responsibility boundaries
+Why: one large test module obscures which contract a failure protects.  Done:
+group argument, document/storage, auto-save, presentation/state, and PTY tests
+without weakening the end-to-end coverage or duplicating fixtures.
 
 ** TODO [#A] t0007 Make save-result feedback transient
 Recommendation: reuse the trailing state-word slot.  After =Ctrl-S= or =:w=,

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from prompt_toolkit.application import Application, run_in_terminal
-from prompt_toolkit.buffer import reshape_text
+from prompt_toolkit.buffer import Buffer, reshape_text
 from prompt_toolkit.clipboard import InMemoryClipboard
 from prompt_toolkit.enums import EditingMode
 from prompt_toolkit.filters import (
@@ -34,7 +34,7 @@ from prompt_toolkit.filters import (
     vi_insert_mode,
 )
 from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.key_binding.bindings import search as search_bindings
 from prompt_toolkit.key_binding.vi_state import InputMode
 from prompt_toolkit.keys import Keys
@@ -238,6 +238,15 @@ class FinalOutcome(Enum):
     DISCARDED = "discarded"
 
 
+class EditorView(Enum):
+    """The mutually exclusive inedit-owned views in the application body."""
+
+    EDITOR = "editor"
+    HELP = "help"
+    EXIT_PROMPT = "exit-prompt"
+    EX_COMMAND = "ex-command"
+
+
 @dataclass(frozen=True)
 class Fingerprint:
     device: int
@@ -298,9 +307,7 @@ class EditorState:
     program_name: str = "inedit.py"
     message: str | None = None
     discard_armed: bool = False
-    help_visible: bool = False
-    exit_prompt: bool = False
-    ex_command_visible: bool = False
+    view: EditorView = EditorView.EDITOR
     auto_height: bool = False
     requested_height: int = AUTO_MINIMUM_TEXT_ROWS + 1
     effective_height: int = AUTO_MINIMUM_TEXT_ROWS + 1
@@ -1016,9 +1023,9 @@ def format_status(
     modified = state.is_modified(current_text)
     marker = "**" if modified else "--"
     status_word = "modified" if modified else "unchanged"
-    if state.exit_prompt:
+    if state.view is EditorView.EXIT_PROMPT:
         return _truncate_right(EXIT_PROMPT, columns)
-    help_action = "^G Close" if state.help_visible else "^G Help"
+    help_action = "^G Close" if state.view is EditorView.HELP else "^G Help"
     suffix_parts = [
         f"{viewport_position} L{cursor_row + 1} C{cursor_column + 1}"
     ]
@@ -1071,6 +1078,759 @@ def format_status(
     return _truncate_right(essential, columns)
 
 
+class EditorController:
+    """Own inedit's UI state transitions and prompt-toolkit callbacks.
+
+    Prompt-toolkit still owns text editing. This controller owns only the
+    application lifecycle around its buffers: save, exit, help, Ex commands,
+    height, recovery, external handoff, and rendering.
+    """
+
+    def __init__(
+        self,
+        document: Document,
+        options: EditorOptions,
+        *,
+        program_name: str = "inedit.py",
+        initial_height: int | None = None,
+        input: Any = None,
+        output: Any = None,
+    ) -> None:
+        self.options = options
+        requested_height = initial_requested_height(document, options)
+        self.state = EditorState(
+            document=document,
+            original_text=document.text,
+            program_name=program_name,
+            auto_height=options.height is None,
+            requested_height=requested_height,
+            effective_height=(
+                initial_height if initial_height is not None else requested_height
+            ),
+        )
+        self.application: Application[EditorResult] | None = None
+        self.height_message_generation = 0
+
+        self.search_toolbar = SearchToolbar(vi_mode=options.vi)
+        self.text_area = TextArea(
+            text=document.text,
+            multiline=True,
+            read_only=Condition(
+                lambda: self.state.view is EditorView.EXIT_PROMPT
+            ),
+            wrap_lines=False,
+            scrollbar=True,
+            line_numbers=options.line_numbers,
+            height=lambda: self.state.effective_height - 1,
+            search_field=self.search_toolbar,
+        )
+        self.help_area = TextArea(
+            text=VI_HELP_TEXT if options.vi else EMACS_HELP_TEXT,
+            multiline=True,
+            read_only=True,
+            wrap_lines=False,
+            scrollbar=True,
+            line_numbers=False,
+            height=lambda: self.state.effective_height - 1,
+        )
+        self.command_area = TextArea(
+            text="",
+            multiline=False,
+            prompt=":",
+            wrap_lines=False,
+            height=1,
+            style="class:status",
+        )
+        self.text_area.buffer.on_text_changed += self.buffer_changed
+
+        self.bindings = KeyBindings()
+        self.ex_command_mode = Condition(
+            lambda: self.state.view is EditorView.EX_COMMAND
+        )
+        self.exit_prompt_mode = Condition(
+            lambda: self.state.view is EditorView.EXIT_PROMPT
+        )
+        self.emacs_mode = Condition(
+            lambda: not self.options.vi
+            and self.state.view is EditorView.EDITOR
+        )
+        self.repeatable_search = Condition(self.can_repeat_search)
+        self.vi_normal_editor = Condition(self.is_vi_normal_editor)
+        self.install_bindings()
+
+        layout = self.build_layout()
+        application: Application[EditorResult] = Application(
+            layout=layout,
+            style=Style.from_dict(
+                {
+                    "status": "reverse",
+                    "search-toolbar": "reverse",
+                    "search-toolbar.prompt": "reverse",
+                    "search-toolbar.text": "reverse",
+                }
+            ),
+            key_bindings=self.bindings,
+            clipboard=InMemoryClipboard(max_size=1),
+            editing_mode=EditingMode.VI if options.vi else EditingMode.EMACS,
+            enable_page_navigation_bindings=True,
+            full_screen=False,
+            erase_when_done=True,
+            terminal_size_polling_interval=0.5,
+            on_reset=self.initialize_vi_mode,
+            before_render=self.before_render,
+            input=input,
+            output=output,
+        )
+        self.application = application
+        application.pre_run_callables.append(self.start_auto_save)
+        self.initialize_vi_mode(application)
+
+    def built_editor(self) -> BuiltEditor:
+        application = self.require_application()
+        return BuiltEditor(
+            application,
+            self.state,
+            self.text_area,
+            self.help_area,
+            self.command_area,
+            self.search_toolbar,
+        )
+
+    def require_application(self) -> Application[EditorResult]:
+        if self.application is None:
+            raise RuntimeError("editor application has not been constructed")
+        return self.application
+
+    def invalidate(self) -> None:
+        if self.application is not None:
+            self.application.invalidate()
+
+    # Lifecycle and persistence transitions.
+
+    def finish_editor(
+        self,
+        application: Application[EditorResult],
+        reason: ExitReason,
+    ) -> None:
+        """Exit through prompt-toolkit's final retained render."""
+
+        if application.is_done:
+            return
+        self.state.final_summary = capture_final_summary(
+            self.state,
+            self.text_area.buffer.text,
+        )
+        application.erase_when_done = False
+        application.exit(result=EditorResult(reason))
+
+    def buffer_changed(self, _buffer: Buffer) -> None:
+        self.state.discard_armed = False
+        if self.state.view is EditorView.EXIT_PROMPT:
+            self.state.view = EditorView.EDITOR
+        self.state.message = None
+        if self.state.auto_height:
+            content_height = automatic_height(self.text_area.buffer.text)
+            if content_height > self.state.requested_height:
+                self.state.requested_height = content_height
+                if self.application is not None:
+                    rows = self.application.output.get_size().rows
+                    try:
+                        self.state.effective_height = effective_height(
+                            self.state.requested_height,
+                            rows,
+                        )
+                    except TerminalError as exc:
+                        self.application.exit(
+                            result=EditorResult(ExitReason.ERROR, str(exc))
+                        )
+        self.invalidate()
+
+    def leave_ex_command(self, application: Application[EditorResult]) -> None:
+        self.state.view = EditorView.EDITOR
+        self.command_area.buffer.text = ""
+        if self.options.vi:
+            application.vi_state.input_mode = InputMode.NAVIGATION
+        application.layout.focus(self.text_area)
+        application.invalidate()
+
+    def save_buffer(self, event: KeyPressEvent) -> bool:
+        if self.state.view is EditorView.EXIT_PROMPT:
+            self.state.view = EditorView.EDITOR
+        current_text = self.text_area.buffer.text
+        if self.state.is_modified(current_text):
+            try:
+                saved_document = save_document(self.state.document, current_text)
+            except SaveError as exc:
+                self.state.message = _one_line(str(exc))
+                self.state.discard_armed = False
+                event.app.invalidate()
+                return False
+            self.state.document = saved_document
+            self.state.original_text = current_text
+            self.state.saved_during_session = True
+            self.state.discard_armed = False
+            self.state.message = "Saved"
+        else:
+            self.state.message = "No changes to save"
+
+        if self.state.auto_save.snapshot is not None:
+            try:
+                remove_auto_save(self.state.auto_save.snapshot)
+            except AutoSaveError as exc:
+                self.state.auto_save.error = (
+                    f"Auto-save cleanup failed: {_one_line(str(exc))}"
+                )
+            else:
+                self.state.auto_save = AutoSaveState()
+        elif self.state.auto_save.disabled:
+            # Saving is a useful retry point if a stale recovery file was
+            # moved away in another terminal.
+            self.state.auto_save = AutoSaveState()
+        event.app.invalidate()
+        return True
+
+    async def auto_save_loop(
+        self,
+        application: Application[EditorResult],
+    ) -> None:
+        while True:
+            await asyncio.sleep(AUTO_SAVE_INTERVAL_SECONDS)
+            if application.is_done or self.state.auto_save.disabled:
+                return
+            current_text = self.text_area.buffer.text
+            if (
+                not self.state.is_modified(current_text)
+                or current_text == self.state.auto_save.text
+            ):
+                continue
+            try:
+                snapshot = write_auto_save(
+                    self.state.document,
+                    current_text,
+                    self.state.auto_save.snapshot,
+                )
+            except (SaveError, AutoSaveError) as exc:
+                self.state.auto_save.disabled = True
+                self.state.auto_save.error = (
+                    f"Auto-save disabled: {_one_line(str(exc))}"
+                )
+            else:
+                self.state.auto_save.snapshot = snapshot
+                self.state.auto_save.text = current_text
+                self.state.auto_save.error = None
+            application.invalidate()
+
+    def save(self, event: KeyPressEvent) -> None:
+        if self.state.view is EditorView.EX_COMMAND:
+            self.leave_ex_command(event.app)
+        self.save_buffer(event)
+
+    def request_exit(self, event: KeyPressEvent) -> None:
+        if self.state.view is EditorView.EX_COMMAND:
+            self.leave_ex_command(event.app)
+        if self.state.view is EditorView.HELP:
+            self.state.view = EditorView.EDITOR
+            event.app.layout.focus(self.text_area)
+        if self.state.is_modified(self.text_area.buffer.text):
+            self.state.view = EditorView.EXIT_PROMPT
+            self.state.discard_armed = False
+            self.state.message = None
+            event.app.invalidate()
+        else:
+            self.finish_editor(event.app, ExitReason.SAVED)
+
+    def exit_editor(self, event: KeyPressEvent) -> None:
+        if self.state.view is not EditorView.EXIT_PROMPT:
+            self.request_exit(event)
+
+    def ctrl_c_exit(self, event: KeyPressEvent) -> None:
+        if self.state.view is EditorView.EXIT_PROMPT:
+            self.state.view = EditorView.EDITOR
+            self.state.message = None
+            event.app.invalidate()
+        else:
+            self.request_exit(event)
+
+    def signal_cancel(self, event: KeyPressEvent) -> None:
+        if self.state.view is EditorView.EXIT_PROMPT:
+            self.state.view = EditorView.EDITOR
+            self.state.message = None
+            event.app.invalidate()
+            return
+        if not self.state.is_modified(self.text_area.buffer.text):
+            self.finish_editor(event.app, ExitReason.CANCELED)
+        elif self.state.discard_armed:
+            self.finish_editor(event.app, ExitReason.CANCELED)
+        else:
+            self.state.discard_armed = True
+            self.state.message = SIGNAL_DISCARD_MESSAGE
+            event.app.invalidate()
+
+    def toggle_help(self, event: KeyPressEvent) -> None:
+        if self.state.view is EditorView.EX_COMMAND:
+            self.leave_ex_command(event.app)
+        self.state.message = None
+        if self.state.view is EditorView.HELP:
+            self.state.view = EditorView.EDITOR
+            event.app.layout.focus(self.text_area)
+        else:
+            self.state.view = EditorView.HELP
+            self.help_area.buffer.cursor_position = 0
+            event.app.layout.focus(self.help_area)
+        event.app.invalidate()
+
+    # Editing-mode and display commands.
+
+    def adjust_editor_height(self, event: KeyPressEvent, delta: int) -> None:
+        self.state.auto_height = False
+        rows = event.app.output.get_size().rows
+        try:
+            new_height = adjusted_height(
+                self.state.effective_height,
+                delta,
+                rows,
+            )
+        except TerminalError as exc:
+            event.app.exit(result=EditorResult(ExitReason.ERROR, str(exc)))
+            return
+
+        if new_height != self.state.effective_height:
+            self.state.requested_height = new_height
+            self.state.effective_height = new_height
+        message = f"Height: {self.state.effective_height}"
+        self.state.message = message
+        self.height_message_generation += 1
+        generation = self.height_message_generation
+        event.app.invalidate()
+        event.app.create_background_task(
+            self.clear_height_message(event.app, message, generation)
+        )
+
+    async def clear_height_message(
+        self,
+        application: Application[EditorResult],
+        message: str,
+        generation: int,
+    ) -> None:
+        await asyncio.sleep(HEIGHT_MESSAGE_SECONDS)
+        if (
+            generation == self.height_message_generation
+            and self.state.message == message
+        ):
+            self.state.message = None
+            application.invalidate()
+
+    def shrink_editor(self, event: KeyPressEvent) -> None:
+        self.adjust_editor_height(event, -1)
+
+    def expand_editor(self, event: KeyPressEvent) -> None:
+        self.adjust_editor_height(event, 1)
+
+    def answer_exit_prompt(self, event: KeyPressEvent) -> None:
+        answer = event.data.casefold()
+        if answer == "y":
+            if self.save_buffer(event):
+                self.finish_editor(event.app, ExitReason.SAVED)
+        elif answer == "n":
+            self.finish_editor(event.app, ExitReason.CANCELED)
+
+    def can_repeat_search(self) -> bool:
+        return (
+            not self.options.vi
+            and self.state.view is EditorView.EDITOR
+            and not is_searching()
+            and bool(self.text_area.control.search_state.text)
+            and self.application is not None
+            and self.application.layout.current_buffer is self.text_area.buffer
+        )
+
+    def start_forward_search(self, event: KeyPressEvent) -> None:
+        search_bindings.start_forward_incremental_search.call(event)
+
+    def continue_forward_search(self, event: KeyPressEvent) -> None:
+        search_bindings.forward_incremental_search.call(event)
+
+    def repeat_search(self, event: KeyPressEvent) -> None:
+        self.text_area.buffer.apply_search(
+            self.text_area.control.search_state,
+            include_current_position=False,
+            count=event.arg,
+        )
+        event.app.invalidate()
+
+    def is_vi_normal_editor(self) -> bool:
+        return (
+            self.options.vi
+            and self.state.view is EditorView.EDITOR
+            and self.application is not None
+            and self.application.vi_state.input_mode is InputMode.NAVIGATION
+            and self.text_area.buffer.selection_state is None
+            and self.application.layout.current_buffer is self.text_area.buffer
+        )
+
+    def vi_write_if_modified_and_exit(self, event: KeyPressEvent) -> None:
+        if (
+            not self.state.is_modified(self.text_area.buffer.text)
+            or self.save_buffer(event)
+        ):
+            self.finish_editor(event.app, ExitReason.SAVED)
+
+    def open_ex_command(self, event: KeyPressEvent) -> None:
+        self.state.view = EditorView.EX_COMMAND
+        self.command_area.buffer.text = ""
+        event.app.vi_state.input_mode = InputMode.INSERT
+        event.app.layout.focus(self.command_area)
+        event.app.invalidate()
+
+    def cancel_ex_command(self, event: KeyPressEvent) -> None:
+        self.leave_ex_command(event.app)
+
+    def accept_ex_command(self, event: KeyPressEvent) -> None:
+        command = self.command_area.buffer.text.strip()
+        self.leave_ex_command(event.app)
+        if command in ("w", "write"):
+            self.save_buffer(event)
+        elif command in ("q", "quit"):
+            if self.state.is_modified(self.text_area.buffer.text):
+                self.state.message = "No write since last change"
+                event.app.invalidate()
+            else:
+                self.finish_editor(event.app, ExitReason.SAVED)
+        elif command == "wq":
+            if self.save_buffer(event):
+                self.finish_editor(event.app, ExitReason.SAVED)
+        elif command in ("h", "help"):
+            self.state.view = EditorView.HELP
+            self.help_area.buffer.cursor_position = 0
+            event.app.layout.focus(self.help_area)
+            event.app.invalidate()
+        elif command == "external":
+            self.open_in_external_editor(event)
+        elif command:
+            self.state.message = f"Not an editor command: {command}"
+            event.app.invalidate()
+
+    def move_by_character(self, event: KeyPressEvent, count: int) -> None:
+        buffer = event.current_buffer
+        if (
+            buffer.selection_state is not None
+            and buffer.selection_state.shift_mode
+        ):
+            buffer.exit_selection()
+        buffer.cursor_position += count
+
+    def move_left(self, event: KeyPressEvent) -> None:
+        self.move_by_character(event, -event.arg)
+
+    def move_right(self, event: KeyPressEvent) -> None:
+        self.move_by_character(event, event.arg)
+
+    def undo(self, event: KeyPressEvent) -> None:
+        self.text_area.buffer.undo()
+        event.app.invalidate()
+
+    def redo(self, event: KeyPressEvent) -> None:
+        self.text_area.buffer.redo()
+        event.app.invalidate()
+
+    def fill_paragraph(self, event: KeyPressEvent) -> None:
+        buffer = self.text_area.buffer
+        document = buffer.document
+        start = document.cursor_position + document.start_of_paragraph()
+        end = document.cursor_position + document.end_of_paragraph()
+        from_row, _ = document.translate_index_to_position(start)
+        to_row, _ = document.translate_index_to_position(end)
+        reshape_text(buffer, from_row, to_row)
+        event.app.invalidate()
+
+    def open_in_external_editor(self, event: KeyPressEvent) -> None:
+        event.app.create_background_task(self.run_external_editor(event.app))
+
+    async def run_external_editor(
+        self,
+        application: Application[EditorResult],
+    ) -> None:
+        buffer = self.text_area.buffer
+        suffix = Path(self.state.document.display_path).suffix
+        descriptor, filename = tempfile.mkstemp(suffix=suffix)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(buffer.text)
+
+            editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+            command = shlex.split(editor) + [filename]
+
+            def invoke_editor() -> int:
+                return subprocess.call(command)
+
+            try:
+                returncode = await run_in_terminal(
+                    invoke_editor,
+                    in_executor=True,
+                )
+            except OSError as exc:
+                self.state.message = f"could not launch external editor: {exc}"
+            else:
+                if returncode != 0:
+                    self.state.message = (
+                        f"External editor exited with status {returncode}"
+                    )
+                else:
+                    with open(filename, "rb") as stream:
+                        data = stream.read()
+                    try:
+                        text, _newline_style, _has_bom = decode_document(data)
+                    except LoadError as exc:
+                        self.state.message = _one_line(str(exc))
+                    else:
+                        buffer.text = text
+                        buffer.cursor_position = 0
+                        self.state.message = "Applied external edit"
+        finally:
+            try:
+                os.unlink(filename)
+            except FileNotFoundError:
+                pass
+        application.invalidate()
+
+    # Rendering and prompt-toolkit lifecycle hooks.
+
+    def status_fragments(self) -> FormattedText:
+        buffer_document = self.text_area.buffer.document
+        columns = 80
+        mode = None
+        line_count = buffer_document.line_count
+        visible_rows = max(1, self.state.effective_height - 1)
+        viewport_position = format_viewport_position(
+            0,
+            min(line_count - 1, visible_rows - 1),
+            line_count,
+        )
+        if self.application is not None:
+            columns = self.application.output.get_size().columns
+            render_info = self.text_area.window.render_info
+            if render_info is not None and render_info.displayed_lines:
+                viewport_position = format_viewport_position(
+                    render_info.first_visible_line(),
+                    render_info.last_visible_line(),
+                    render_info.content_height,
+                )
+            if self.options.vi:
+                mode = vi_mode_label(
+                    self.application.vi_state.input_mode,
+                    has_selection=(
+                        self.text_area.buffer.selection_state is not None
+                    ),
+                    temporary_navigation=(
+                        self.application.vi_state.temporary_navigation_mode
+                    ),
+                )
+        status = format_status(
+            self.state,
+            self.text_area.buffer.text,
+            buffer_document.cursor_position_row,
+            buffer_document.cursor_position_col,
+            columns,
+            mode,
+            viewport_position,
+        )
+        return FormattedText([("class:status", status)])
+
+    def final_summary_fragments(self) -> FormattedText:
+        columns = 80
+        if self.application is not None:
+            columns = self.application.output.get_size().columns
+        assert self.state.final_summary is not None
+        summary = format_final_summary(self.state.final_summary, columns)
+        return FormattedText([("", summary)])
+
+    def build_layout(self) -> Layout:
+        status_window = Window(
+            content=FormattedTextControl(self.status_fragments),
+            height=1,
+            dont_extend_height=True,
+            wrap_lines=False,
+            style="class:status",
+        )
+        final_summary_window = Window(
+            content=FormattedTextControl(self.final_summary_fragments),
+            height=1,
+            dont_extend_height=True,
+            wrap_lines=False,
+        )
+        final_summary_visible = Condition(
+            lambda: self.state.final_summary is not None
+        )
+        root = HSplit(
+            [
+                DynamicContainer(
+                    lambda: (
+                        self.help_area
+                        if self.state.view is EditorView.HELP
+                        else self.text_area
+                    )
+                ),
+                ConditionalContainer(
+                    self.search_toolbar,
+                    filter=~final_summary_visible,
+                ),
+                ConditionalContainer(
+                    self.command_area,
+                    filter=(
+                        self.ex_command_mode
+                        & ~is_searching
+                        & ~final_summary_visible
+                    ),
+                ),
+                ConditionalContainer(
+                    status_window,
+                    filter=(
+                        ~self.ex_command_mode
+                        & ~is_searching
+                        & ~final_summary_visible
+                    ),
+                ),
+                ConditionalContainer(
+                    final_summary_window,
+                    filter=final_summary_visible,
+                ),
+            ],
+            height=lambda: self.state.effective_height,
+        )
+        return Layout(root, focused_element=self.text_area)
+
+    def before_render(self, application: Application[EditorResult]) -> None:
+        if application.is_done:
+            return
+        rows = application.output.get_size().rows
+        try:
+            new_height = effective_height(self.state.requested_height, rows)
+        except TerminalError as exc:
+            application.exit(result=EditorResult(ExitReason.ERROR, str(exc)))
+            return
+        if new_height != self.state.effective_height:
+            self.state.effective_height = new_height
+
+    def initialize_vi_mode(self, application: Application[EditorResult]) -> None:
+        if self.options.vi:
+            application.vi_state.input_mode = InputMode.NAVIGATION
+
+    def start_auto_save(self) -> None:
+        application = self.require_application()
+        application.create_background_task(self.auto_save_loop(application))
+
+    # The complete application-level keymap is registered in one place. Each
+    # target is a named method above rather than a closure inside construction.
+
+    def install_bindings(self) -> None:
+        def no_implicit_save(_event: KeyPressEvent) -> bool:
+            return False
+
+        add = self.bindings.add
+
+        add("c-s", filter=~is_searching, eager=True)(self.save)
+        add(
+            "c-x",
+            filter=~is_searching,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.exit_editor)
+        add(
+            "c-c",
+            filter=~self.ex_command_mode & ~is_searching,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.ctrl_c_exit)
+        add(Keys.SIGINT, eager=True)(self.signal_cancel)
+        add(
+            "c-g",
+            filter=~is_searching,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.toggle_help)
+        add(
+            "escape",
+            "up",
+            filter=~self.exit_prompt_mode,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.shrink_editor)
+        add(
+            "escape",
+            "down",
+            filter=~self.exit_prompt_mode,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.expand_editor)
+        add(
+            Keys.Any,
+            filter=self.exit_prompt_mode,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.answer_exit_prompt)
+        add(
+            "c-w",
+            filter=self.emacs_mode & ~has_selection & ~is_searching,
+            eager=True,
+        )(self.start_forward_search)
+        add(
+            "c-w",
+            filter=self.emacs_mode & is_searching,
+            eager=True,
+        )(self.continue_forward_search)
+        add("f3", filter=self.repeatable_search, eager=True)(self.repeat_search)
+
+        arrow_mode = self.emacs_mode | vi_insert_mode
+        add("left", filter=arrow_mode, eager=True)(self.move_left)
+        add("right", filter=arrow_mode, eager=True)(self.move_right)
+        add(
+            "c-z",
+            filter=self.emacs_mode,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.undo)
+        add(
+            "escape",
+            "e",
+            filter=self.emacs_mode,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.redo)
+        add("escape", "q", filter=self.emacs_mode, eager=True)(
+            self.fill_paragraph
+        )
+        add("escape", "v", filter=self.emacs_mode, eager=True)(
+            self.open_in_external_editor
+        )
+
+        add(
+            "Z",
+            "Z",
+            filter=self.vi_normal_editor,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.vi_write_if_modified_and_exit)
+        add(":", filter=self.vi_normal_editor, eager=True)(self.open_ex_command)
+        add(
+            "escape",
+            filter=self.ex_command_mode,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.cancel_ex_command)
+        add(
+            "c-c",
+            filter=self.ex_command_mode,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.cancel_ex_command)
+        add(
+            "enter",
+            filter=self.ex_command_mode,
+            eager=True,
+            save_before=no_implicit_save,
+        )(self.accept_ex_command)
+
+
 def build_application(
     document: Document,
     options: EditorOptions,
@@ -1080,700 +1840,16 @@ def build_application(
     input: Any = None,
     output: Any = None,
 ) -> BuiltEditor:
-    """Construct the prompt_toolkit application and its mutable editor state."""
+    """Construct the prompt-toolkit editor through its explicit controller."""
 
-    requested_initial_height = initial_requested_height(document, options)
-    effective_initial_height = (
-        initial_height
-        if initial_height is not None
-        else requested_initial_height
-    )
-    state = EditorState(
-        document=document,
-        original_text=document.text,
+    return EditorController(
+        document,
+        options,
         program_name=program_name,
-        auto_height=options.height is None,
-        requested_height=requested_initial_height,
-        effective_height=effective_initial_height,
-    )
-    search_toolbar = SearchToolbar(vi_mode=options.vi)
-    text_area = TextArea(
-        text=document.text,
-        multiline=True,
-        read_only=Condition(lambda: state.exit_prompt),
-        wrap_lines=False,
-        scrollbar=True,
-        line_numbers=options.line_numbers,
-        height=lambda: state.effective_height - 1,
-        search_field=search_toolbar,
-    )
-    current_document = document
-    help_area = TextArea(
-        text=VI_HELP_TEXT if options.vi else EMACS_HELP_TEXT,
-        multiline=True,
-        read_only=True,
-        wrap_lines=False,
-        scrollbar=True,
-        line_numbers=False,
-        height=lambda: state.effective_height - 1,
-    )
-    command_area = TextArea(
-        text="",
-        multiline=False,
-        prompt=":",
-        wrap_lines=False,
-        height=1,
-        style="class:status",
-    )
-    application_reference: list[Application[EditorResult]] = []
-
-    def invalidate() -> None:
-        if application_reference:
-            application_reference[0].invalidate()
-
-    def finish_editor(
-        application: Application[EditorResult],
-        reason: ExitReason,
-    ) -> None:
-        """Exit through prompt-toolkit's final retained render."""
-
-        if application.is_done:
-            return
-        state.final_summary = capture_final_summary(
-            state,
-            text_area.buffer.text,
-        )
-        application.erase_when_done = False
-        application.exit(result=EditorResult(reason))
-
-    def buffer_changed(_buffer: Any) -> None:
-        state.discard_armed = False
-        state.exit_prompt = False
-        state.message = None
-        if state.auto_height:
-            content_height = automatic_height(text_area.buffer.text)
-            if content_height > state.requested_height:
-                state.requested_height = content_height
-                if application_reference:
-                    application = application_reference[0]
-                    rows = application.output.get_size().rows
-                    try:
-                        state.effective_height = effective_height(
-                            state.requested_height,
-                            rows,
-                        )
-                    except TerminalError as exc:
-                        application.exit(
-                            result=EditorResult(ExitReason.ERROR, str(exc))
-                        )
-        invalidate()
-
-    text_area.buffer.on_text_changed += buffer_changed
-
-    bindings = KeyBindings()
-    ex_command_mode = Condition(lambda: state.ex_command_visible)
-    height_message_generation = 0
-
-    def leave_ex_command(application: Application[EditorResult]) -> None:
-        state.ex_command_visible = False
-        command_area.buffer.text = ""
-        if options.vi:
-            application.vi_state.input_mode = InputMode.NAVIGATION
-        application.layout.focus(text_area)
-        application.invalidate()
-
-    def save_buffer(event: Any) -> bool:
-        nonlocal current_document
-
-        state.exit_prompt = False
-        current_text = text_area.buffer.text
-        if state.is_modified(current_text):
-            try:
-                current_document = save_document(current_document, current_text)
-            except SaveError as exc:
-                state.message = _one_line(str(exc))
-                state.discard_armed = False
-                event.app.invalidate()
-                return False
-            state.document = current_document
-            state.original_text = current_text
-            state.saved_during_session = True
-            state.discard_armed = False
-            state.message = "Saved"
-        else:
-            state.message = "No changes to save"
-
-        if state.auto_save.snapshot is not None:
-            try:
-                remove_auto_save(state.auto_save.snapshot)
-            except AutoSaveError as exc:
-                state.auto_save.error = (
-                    f"Auto-save cleanup failed: {_one_line(str(exc))}"
-                )
-            else:
-                state.auto_save = AutoSaveState()
-        elif state.auto_save.disabled:
-            # An explicit save is a useful point to retry auto-saving if the
-            # user modifies the buffer again (for example, after moving a
-            # stale recovery file out of the way in another terminal).
-            state.auto_save = AutoSaveState()
-        event.app.invalidate()
-        return True
-
-    async def auto_save_loop(application: Application[EditorResult]) -> None:
-        while True:
-            await asyncio.sleep(AUTO_SAVE_INTERVAL_SECONDS)
-            if application.is_done or state.auto_save.disabled:
-                return
-            current_text = text_area.buffer.text
-            if (
-                not state.is_modified(current_text)
-                or current_text == state.auto_save.text
-            ):
-                continue
-            try:
-                snapshot = write_auto_save(
-                    state.document,
-                    current_text,
-                    state.auto_save.snapshot,
-                )
-            except (SaveError, AutoSaveError) as exc:
-                state.auto_save.disabled = True
-                state.auto_save.error = (
-                    f"Auto-save disabled: {_one_line(str(exc))}"
-                )
-            else:
-                state.auto_save.snapshot = snapshot
-                state.auto_save.text = current_text
-                state.auto_save.error = None
-            application.invalidate()
-
-    @bindings.add("c-s", filter=~is_searching, eager=True)
-    def save(event: Any) -> None:
-        if state.ex_command_visible:
-            leave_ex_command(event.app)
-        save_buffer(event)
-
-    def request_exit(event: Any) -> None:
-        if state.ex_command_visible:
-            leave_ex_command(event.app)
-        if state.help_visible:
-            state.help_visible = False
-            event.app.layout.focus(text_area)
-        if state.is_modified(text_area.buffer.text):
-            state.exit_prompt = True
-            state.discard_armed = False
-            state.message = None
-            event.app.invalidate()
-        else:
-            finish_editor(event.app, ExitReason.SAVED)
-
-    @bindings.add(
-        "c-x",
-        filter=~is_searching,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def exit_editor(event: Any) -> None:
-        if not state.exit_prompt:
-            request_exit(event)
-
-    @bindings.add(
-        "c-c",
-        filter=~ex_command_mode & ~is_searching,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def ctrl_c_exit(event: Any) -> None:
-        if state.exit_prompt:
-            state.exit_prompt = False
-            state.message = None
-            event.app.invalidate()
-        else:
-            request_exit(event)
-
-    @bindings.add(Keys.SIGINT, eager=True)
-    def signal_cancel(event: Any) -> None:
-        if state.exit_prompt:
-            state.exit_prompt = False
-            state.message = None
-            event.app.invalidate()
-            return
-        if not state.is_modified(text_area.buffer.text):
-            finish_editor(event.app, ExitReason.CANCELED)
-        elif state.discard_armed:
-            finish_editor(event.app, ExitReason.CANCELED)
-        else:
-            state.discard_armed = True
-            state.message = SIGNAL_DISCARD_MESSAGE
-            event.app.invalidate()
-
-    @bindings.add(
-        "c-g",
-        filter=~is_searching,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def toggle_help(event: Any) -> None:
-        if state.ex_command_visible:
-            leave_ex_command(event.app)
-        state.exit_prompt = False
-        state.message = None
-        state.help_visible = not state.help_visible
-        if state.help_visible:
-            help_area.buffer.cursor_position = 0
-            event.app.layout.focus(help_area)
-        else:
-            event.app.layout.focus(text_area)
-        event.app.invalidate()
-
-    exit_prompt = Condition(lambda: state.exit_prompt)
-
-    def adjust_editor_height(event: Any, delta: int) -> None:
-        nonlocal height_message_generation
-
-        state.auto_height = False
-        rows = event.app.output.get_size().rows
-        try:
-            new_height = adjusted_height(
-                state.effective_height,
-                delta,
-                rows,
-            )
-        except TerminalError as exc:
-            event.app.exit(result=EditorResult(ExitReason.ERROR, str(exc)))
-            return
-
-        if new_height != state.effective_height:
-            state.requested_height = new_height
-            state.effective_height = new_height
-        message = f"Height: {state.effective_height}"
-        state.message = message
-        height_message_generation += 1
-        generation = height_message_generation
-        event.app.invalidate()
-
-        async def clear_height_message() -> None:
-            await asyncio.sleep(HEIGHT_MESSAGE_SECONDS)
-            if (
-                generation == height_message_generation
-                and state.message == message
-            ):
-                state.message = None
-                event.app.invalidate()
-
-        event.app.create_background_task(clear_height_message())
-
-    @bindings.add(
-        "escape",
-        "up",
-        filter=~exit_prompt,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def shrink_editor(event: Any) -> None:
-        adjust_editor_height(event, -1)
-
-    @bindings.add(
-        "escape",
-        "down",
-        filter=~exit_prompt,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def expand_editor(event: Any) -> None:
-        adjust_editor_height(event, 1)
-
-    @bindings.add(
-        Keys.Any,
-        filter=exit_prompt,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def answer_exit_prompt(event: Any) -> None:
-        answer = event.data.casefold()
-        if answer == "y":
-            if save_buffer(event):
-                finish_editor(event.app, ExitReason.SAVED)
-        elif answer == "n":
-            finish_editor(event.app, ExitReason.CANCELED)
-
-    emacs_mode = Condition(
-        lambda: not options.vi
-        and not state.help_visible
-        and not state.exit_prompt
-    )
-
-    @bindings.add(
-        "c-w",
-        filter=emacs_mode & ~has_selection & ~is_searching,
-        eager=True,
-    )
-    def start_forward_search(event: Any) -> None:
-        search_bindings.start_forward_incremental_search.call(event)
-
-    @bindings.add(
-        "c-w",
-        filter=emacs_mode & is_searching,
-        eager=True,
-    )
-    def continue_forward_search(event: Any) -> None:
-        search_bindings.forward_incremental_search.call(event)
-
-    repeatable_search = Condition(
-        lambda: not options.vi
-        and not state.help_visible
-        and not state.exit_prompt
-        and not state.ex_command_visible
-        and not is_searching()
-        and bool(text_area.control.search_state.text)
-        and bool(application_reference)
-        and application_reference[0].layout.current_buffer
-        is text_area.buffer
-    )
-
-    @bindings.add("f3", filter=repeatable_search, eager=True)
-    def repeat_search(event: Any) -> None:
-        text_area.buffer.apply_search(
-            text_area.control.search_state,
-            include_current_position=False,
-            count=event.arg,
-        )
-        event.app.invalidate()
-
-    arrow_mode = emacs_mode | vi_insert_mode
-    vi_normal_editor = Condition(
-        lambda: options.vi
-        and not state.help_visible
-        and not state.exit_prompt
-        and not state.ex_command_visible
-        and bool(application_reference)
-        and application_reference[0].vi_state.input_mode
-        is InputMode.NAVIGATION
-        and text_area.buffer.selection_state is None
-        and application_reference[0].layout.current_buffer is text_area.buffer
-    )
-
-    @bindings.add(
-        "Z",
-        "Z",
-        filter=vi_normal_editor,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def vi_write_if_modified_and_exit(event: Any) -> None:
-        if not state.is_modified(text_area.buffer.text) or save_buffer(event):
-            finish_editor(event.app, ExitReason.SAVED)
-
-    @bindings.add(":", filter=vi_normal_editor, eager=True)
-    def open_ex_command(event: Any) -> None:
-        state.ex_command_visible = True
-        command_area.buffer.text = ""
-        event.app.vi_state.input_mode = InputMode.INSERT
-        event.app.layout.focus(command_area)
-        event.app.invalidate()
-
-    @bindings.add(
-        "escape",
-        filter=ex_command_mode,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    @bindings.add(
-        "c-c",
-        filter=ex_command_mode,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def cancel_ex_command(event: Any) -> None:
-        leave_ex_command(event.app)
-
-    @bindings.add(
-        "enter",
-        filter=ex_command_mode,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def accept_ex_command(event: Any) -> None:
-        command = command_area.buffer.text.strip()
-        leave_ex_command(event.app)
-        if command in ("w", "write"):
-            save_buffer(event)
-        elif command in ("q", "quit"):
-            if state.is_modified(text_area.buffer.text):
-                state.message = "No write since last change"
-                event.app.invalidate()
-            else:
-                finish_editor(event.app, ExitReason.SAVED)
-        elif command == "wq":
-            if save_buffer(event):
-                finish_editor(event.app, ExitReason.SAVED)
-        elif command in ("h", "help"):
-            state.help_visible = True
-            help_area.buffer.cursor_position = 0
-            event.app.layout.focus(help_area)
-            event.app.invalidate()
-        elif command == "external":
-            open_in_external_editor(event)
-        elif command:
-            state.message = f"Not an editor command: {command}"
-            event.app.invalidate()
-
-    def move_by_character(event: Any, count: int) -> None:
-        buffer = event.current_buffer
-        if (
-            buffer.selection_state is not None
-            and buffer.selection_state.shift_mode
-        ):
-            buffer.exit_selection()
-        buffer.cursor_position += count
-
-    @bindings.add("left", filter=arrow_mode, eager=True)
-    def move_left(event: Any) -> None:
-        move_by_character(event, -event.arg)
-
-    @bindings.add("right", filter=arrow_mode, eager=True)
-    def move_right(event: Any) -> None:
-        move_by_character(event, event.arg)
-
-    @bindings.add(
-        "c-z",
-        filter=emacs_mode,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def undo(event: Any) -> None:
-        text_area.buffer.undo()
-        event.app.invalidate()
-
-    @bindings.add(
-        "escape",
-        "e",
-        filter=emacs_mode,
-        eager=True,
-        save_before=lambda _event: False,
-    )
-    def redo(event: Any) -> None:
-        text_area.buffer.redo()
-        event.app.invalidate()
-
-    @bindings.add(
-        "escape",
-        "q",
-        filter=emacs_mode,
-        eager=True,
-    )
-    def fill_paragraph(event: Any) -> None:
-        buffer = text_area.buffer
-        document = buffer.document
-        start = document.cursor_position + document.start_of_paragraph()
-        end = document.cursor_position + document.end_of_paragraph()
-        from_row, _ = document.translate_index_to_position(start)
-        to_row, _ = document.translate_index_to_position(end)
-        reshape_text(buffer, from_row, to_row)
-        event.app.invalidate()
-
-    @bindings.add(
-        "escape",
-        "v",
-        filter=emacs_mode,
-        eager=True,
-    )
-    def open_in_external_editor(event: Any) -> None:
-        buffer = text_area.buffer
-
-        async def run() -> None:
-            suffix = Path(document.display_path).suffix
-            descriptor, filename = tempfile.mkstemp(suffix=suffix)
-            try:
-                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                    stream.write(buffer.text)
-
-                editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-                command = shlex.split(editor) + [filename]
-
-                def run_editor() -> int:
-                    return subprocess.call(command)
-
-                try:
-                    returncode = await run_in_terminal(run_editor, in_executor=True)
-                except OSError as exc:
-                    state.message = f"could not launch external editor: {exc}"
-                else:
-                    if returncode != 0:
-                        state.message = (
-                            f"External editor exited with status {returncode}"
-                        )
-                    else:
-                        with open(filename, "rb") as stream:
-                            data = stream.read()
-                        try:
-                            text, _newline_style, _has_bom = decode_document(data)
-                        except LoadError as exc:
-                            state.message = _one_line(str(exc))
-                        else:
-                            buffer.text = text
-                            buffer.cursor_position = 0
-                            state.message = "Applied external edit"
-            finally:
-                try:
-                    os.unlink(filename)
-                except FileNotFoundError:
-                    pass
-            event.app.invalidate()
-
-        event.app.create_background_task(run())
-
-    def status_fragments() -> FormattedText:
-        buffer_document = text_area.buffer.document
-        columns = 80
-        mode = None
-        line_count = buffer_document.line_count
-        visible_rows = max(1, state.effective_height - 1)
-        viewport_position = format_viewport_position(
-            0,
-            min(line_count - 1, visible_rows - 1),
-            line_count,
-        )
-        if application_reference:
-            running_application = application_reference[0]
-            columns = running_application.output.get_size().columns
-            render_info = text_area.window.render_info
-            if render_info is not None and render_info.displayed_lines:
-                viewport_position = format_viewport_position(
-                    render_info.first_visible_line(),
-                    render_info.last_visible_line(),
-                    render_info.content_height,
-                )
-            if options.vi:
-                mode = vi_mode_label(
-                    running_application.vi_state.input_mode,
-                    has_selection=text_area.buffer.selection_state is not None,
-                    temporary_navigation=(
-                        running_application.vi_state.temporary_navigation_mode
-                    ),
-                )
-        status = format_status(
-            state,
-            text_area.buffer.text,
-            buffer_document.cursor_position_row,
-            buffer_document.cursor_position_col,
-            columns,
-            mode,
-            viewport_position,
-        )
-        return FormattedText([("class:status", status)])
-
-    def final_summary_fragments() -> FormattedText:
-        columns = 80
-        if application_reference:
-            columns = application_reference[0].output.get_size().columns
-        assert state.final_summary is not None
-        summary = format_final_summary(state.final_summary, columns)
-        return FormattedText([("", summary)])
-
-    status_window = Window(
-        content=FormattedTextControl(status_fragments),
-        height=1,
-        dont_extend_height=True,
-        wrap_lines=False,
-        style="class:status",
-    )
-    final_summary_window = Window(
-        content=FormattedTextControl(final_summary_fragments),
-        height=1,
-        dont_extend_height=True,
-        wrap_lines=False,
-    )
-    final_summary_visible = Condition(lambda: state.final_summary is not None)
-    root = HSplit(
-        [
-            DynamicContainer(
-                lambda: help_area if state.help_visible else text_area
-            ),
-            ConditionalContainer(
-                search_toolbar,
-                filter=~final_summary_visible,
-            ),
-            ConditionalContainer(
-                command_area,
-                filter=(
-                    ex_command_mode
-                    & ~is_searching
-                    & ~final_summary_visible
-                ),
-            ),
-            ConditionalContainer(
-                status_window,
-                filter=(
-                    ~ex_command_mode
-                    & ~is_searching
-                    & ~final_summary_visible
-                ),
-            ),
-            ConditionalContainer(
-                final_summary_window,
-                filter=final_summary_visible,
-            ),
-        ],
-        height=lambda: state.effective_height,
-    )
-    layout = Layout(root, focused_element=text_area)
-
-    def before_render(application: Application[EditorResult]) -> None:
-        if application.is_done:
-            return
-        rows = application.output.get_size().rows
-        try:
-            new_height = effective_height(state.requested_height, rows)
-        except TerminalError as exc:
-            application.exit(result=EditorResult(ExitReason.ERROR, str(exc)))
-            return
-        if new_height != state.effective_height:
-            state.effective_height = new_height
-
-    def initialize_vi_mode(application: Application[EditorResult]) -> None:
-        if options.vi:
-            application.vi_state.input_mode = InputMode.NAVIGATION
-
-    application: Application[EditorResult] = Application(
-        layout=layout,
-        style=Style.from_dict(
-            {
-                "status": "reverse",
-                "search-toolbar": "reverse",
-                "search-toolbar.prompt": "reverse",
-                "search-toolbar.text": "reverse",
-            }
-        ),
-        key_bindings=bindings,
-        clipboard=InMemoryClipboard(max_size=1),
-        editing_mode=EditingMode.VI if options.vi else EditingMode.EMACS,
-        enable_page_navigation_bindings=True,
-        full_screen=False,
-        erase_when_done=True,
-        terminal_size_polling_interval=0.5,
-        on_reset=initialize_vi_mode,
-        before_render=before_render,
+        initial_height=initial_height,
         input=input,
         output=output,
-    )
-
-    def start_auto_save() -> None:
-        application.create_background_task(auto_save_loop(application))
-
-    application.pre_run_callables.append(start_auto_save)
-
-    initialize_vi_mode(application)
-    application_reference.append(application)
-    return BuiltEditor(
-        application,
-        state,
-        text_area,
-        help_area,
-        command_area,
-        search_toolbar,
-    )
+    ).built_editor()
 
 
 def _signal_name(signum: int) -> str:

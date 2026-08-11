@@ -16,16 +16,21 @@ the target commit step.
 
 ## Delivery shape
 
-Keep version 1 in two source files at the repository root:
+The current version remains in two source files at the repository root:
 
 - `inedit.py`: executable entry point and importable implementation.
 - `test_inedit.py`: unit and terminal-integration tests.
 
 Use only the Python standard library and
-`prompt_toolkit>=3.0.36,<4`. Do not add Rich, Textual, a packaging framework,
-or a source-package hierarchy for the first version. Give `inedit.py` a
+`prompt_toolkit>=3.0.36,<4`. Do not add Rich or Textual. Give `inedit.py` a
 `#!/usr/bin/env python3` shebang, but keep all behavior behind `main()` so
 tests can import it without side effects.
+
+This two-file shape is no longer a design goal. `EditorController` establishes
+a boundary that can be moved mechanically into an internal package while
+`inedit.py` remains the executable compatibility facade. Do that split by
+responsibility, not by arbitrary file length; see [code-guide.md](code-guide.md)
+for the intended seams.
 
 ## Data model
 
@@ -75,9 +80,7 @@ class EditorState:
     program_name: str = "inedit.py"
     message: str | None = None
     discard_armed: bool = False
-    help_visible: bool = False
-    exit_prompt: bool = False
-    ex_command_visible: bool = False
+    view: EditorView = EditorView.EDITOR
     auto_height: bool = False
     requested_height: int = 8
     effective_height: int = 8
@@ -92,6 +95,12 @@ class ExitReason(Enum):
     CANCELED = "canceled"
     ERROR = "error"
 ```
+
+`EditorView` is an enum with `EDITOR`, `HELP`, `EXIT_PROMPT`, and
+`EX_COMMAND` members. One enum makes those mutually exclusive states explicit;
+three independent booleans allowed impossible combinations. Search focus is
+managed separately by prompt-toolkit rather than pretending it is an inedit
+modal state.
 
 `display_path` preserves the spelling supplied by the caller for diagnostics
 and the status line. `requested_path` is its absolute, non-symlink-resolved
@@ -179,10 +188,16 @@ the UI can show expected errors without exposing tracebacks.
 
 ## Application construction
 
-`build_application(document, options)` returns a `BuiltEditor` containing the
+`build_application(document, options)` is a small compatibility factory. It
+constructs an `EditorController` and returns its `BuiltEditor`, containing the
 application, state, editing area, help area, Ex command area, and search
-toolbar. Construct one persistent `SearchToolbar`, then attach it to the
-editing `TextArea`:
+toolbar. The controller owns named application transitions and widget
+lifecycle; prompt-toolkit's `Buffer` continues to own text editing. Widget
+construction is isolated in controller helpers instead of being interleaved
+with anonymous key callbacks.
+
+Construct one persistent `SearchToolbar`, then attach it to the editing
+`TextArea`:
 
 ```python
 search_toolbar = SearchToolbar(vi_mode=options.vi)
@@ -310,6 +325,13 @@ buffer text becomes part of terminal scrollback.
 
 ## State and key bindings
 
+All inedit-owned state changes live in named `EditorController` methods.
+`install_bindings()` is the registry that maps keys to those methods; it does
+not contain the save or exit policy itself. This keeps transitions directly
+callable in tests and makes bindings reviewable without following a large
+closure's captured variables. `EditorState.document` is the sole current file
+snapshot throughout saves and external edits.
+
 Register a buffer text-change callback. On every actual edit it must:
 
 - recompute modified state by comparison with `original_text`;
@@ -342,7 +364,8 @@ Ctrl-S follows one path:
 
 Ctrl-X and main-screen Ctrl-C share the same exit request. They exit
 immediately with `SAVED` when the buffer is unchanged. When it is modified,
-set `exit_prompt` and make the editing `TextArea` temporarily read-only. Render
+set `state.view` to `EditorView.EXIT_PROMPT` and make the editing `TextArea`
+temporarily read-only. Render
 `Save modified buffer? Y Yes | N No | ^C Cancel` in the status row. `Y` uses
 the Ctrl-S save path and exits with `SAVED`, `N` exits with `CANCELED` without
 writing, and Ctrl-C clears the prompt and returns to the same editing buffer.
