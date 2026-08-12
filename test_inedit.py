@@ -17,6 +17,26 @@ from prompt_toolkit.output import DummyOutput
 import inedit
 
 
+class ModuleBoundaryTests(unittest.TestCase):
+    def test_facade_exports_resolve(self) -> None:
+        for name in inedit.__all__:
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(inedit, name))
+
+    def test_core_types_live_in_the_internal_layers(self) -> None:
+        self.assertEqual(inedit.Document.__module__, "_inedit.model")
+        self.assertEqual(inedit.load_document.__module__, "_inedit.storage")
+        self.assertEqual(
+            inedit.format_status.__module__,
+            "_inedit.presentation",
+        )
+        self.assertEqual(
+            inedit.EditorController.__module__,
+            "_inedit.application",
+        )
+        self.assertEqual(inedit.run_editor.__module__, "_inedit.terminal")
+
+
 class ArgumentTests(unittest.TestCase):
     def test_defaults_and_switches(self) -> None:
         options = inedit.parse_args(["--vi", "--no-line-numbers", "file.txt"], {})

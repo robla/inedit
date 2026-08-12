@@ -3,10 +3,10 @@
 ## Purpose
 
 Build `inedit.py` as a small, importable Python program whose version-1
-contract is recorded in [roadmap.md](roadmap.md). `prompt_toolkit` owns terminal input,
-Unicode-aware rendering, scrolling, and basic editing. `inedit.py` owns the
-command line, document format, file-conflict policy, atomic save transaction,
-editor state, status line, and process exit status.
+contract is recorded in [roadmap.md](roadmap.md). `prompt_toolkit` owns terminal
+input, Unicode-aware rendering, scrolling, and basic editing. The internal
+`_inedit` package owns the command line, document format, file-conflict policy,
+atomic save transaction, editor state, status line, and process exit status.
 
 The central safety rule is simple: loading and editing never mutate the target.
 The only code allowed to do so is the final commit step in `save_document()`.
@@ -16,9 +16,15 @@ the target commit step.
 
 ## Delivery shape
 
-The current version remains in two source files at the repository root:
+The implementation follows responsibility boundaries rather than file length:
 
-- `inedit.py`: executable entry point and importable implementation.
+- `inedit.py`: executable and import-compatible facade;
+- `_inedit/model.py`: shared data and expected errors;
+- `_inedit/cli.py`: arguments and environment settings;
+- `_inedit/storage.py`: document and recovery-file transactions;
+- `_inedit/presentation.py`: pure formatting, height policy, and Help text;
+- `_inedit/application.py`: prompt-toolkit widgets, controller, and bindings;
+- `_inedit/terminal.py`: terminal startup, signals, execution, and status; and
 - `test_inedit.py`: unit and terminal-integration tests.
 
 Use only the Python standard library and
@@ -26,11 +32,10 @@ Use only the Python standard library and
 `#!/usr/bin/env python3` shebang, but keep all behavior behind `main()` so
 tests can import it without side effects.
 
-This two-file shape is no longer a design goal. `EditorController` establishes
-a boundary that can be moved mechanically into an internal package while
-`inedit.py` remains the executable compatibility facade. Do that split by
-responsibility, not by arbitrary file length; see [code-guide.md](code-guide.md)
-for the intended seams.
+`inedit.py` re-exports the established types and functions so existing imports
+continue to work. Its wrappers also pass replaceable save, recovery, and timer
+dependencies into `EditorController`; internal modules do not import the
+facade. See [code-guide.md](code-guide.md) for the intended patch locations.
 
 ## Data model
 
@@ -188,8 +193,9 @@ the UI can show expected errors without exposing tracebacks.
 
 ## Application construction
 
-`build_application(document, options)` is a small compatibility factory. It
-constructs an `EditorController` and returns its `BuiltEditor`, containing the
+The facade's `build_application(document, options)` assembles
+`EditorDependencies`, delegates to `_inedit.application`, and returns its
+`BuiltEditor`, containing the
 application, state, editing area, help area, Ex command area, and search
 toolbar. The controller owns named application transitions and widget
 lifecycle; prompt-toolkit's `Buffer` continues to own text editing. Widget

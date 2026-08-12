@@ -131,14 +131,14 @@ cleanup errors so a malformed `$VISUAL`/`$EDITOR` cannot emit an asyncio
 traceback into the live UI. Document graphical editors' wait options and define
 cursor and undo behavior for a successful returned edit.
 
-The first maintenance refactor now separates named application transitions
-from widget construction in `EditorController`, represents mutually exclusive
-views with `EditorView`, and keeps one current `Document` snapshot. Next, move
-those established layers into small internal modules while retaining
-`inedit.py` as the executable facade. Then validate help and documentation from
-one intentional key registry, add useful static typing, audit prompt-toolkit
-API use, and add property/adversarial tests for encoding, Unicode display,
-paths, and edit/save state transitions.
+The maintenance refactor separates named application transitions in
+`EditorController`, represents mutually exclusive views with `EditorView`, and
+keeps one current `Document` snapshot. The implementation now lives in small
+model, CLI, storage, presentation, application, and terminal modules while
+`inedit.py` remains the executable compatibility facade. Next, validate Help
+and documentation from one intentional key registry, add useful static typing,
+audit prompt-toolkit API use, and add property/adversarial tests for encoding,
+Unicode display, paths, and edit/save state transitions.
 
 ## Product roadmap after release blockers
 
@@ -459,23 +459,34 @@ must not save implicitly.
 
 ## Implementation structure
 
-The first implementation is one importable script with small testable units:
+The top-level `inedit.py` remains the executable/import facade. Its internal
+package is divided by responsibility:
 
-- `parse_args()` validates command-line and environment settings.
-- `load_document()` returns decoded text, newline style, BOM state, permissions,
-  and the file-change fingerprint.
-- `save_document()` performs conflict checking and atomic replacement, then
-  returns the refreshed document snapshot needed for another save.
-- `write_auto_save()` and `remove_auto_save()` maintain a fingerprinted,
-  mode-`0600` `#filename#` recovery snapshot without mutating the target.
-- `EditorState` tracks the document, original text, automatic-height mode,
-  requested and effective heights, transient views and prompts, status message,
-  armed discard confirmation, successful-write history, recovery snapshot and
-  warning state, and prepared final summary.
-- `build_application()` constructs the editing/help/command areas, search
-  toolbar, status control, conditional layout, styles, and key bindings.
-- `main()` performs preflight checks, runs the application, and maps outcomes to
-  exit statuses.
+- `_inedit/cli.py`: `parse_args()` validates command-line and environment
+  settings.
+- `_inedit/storage.py`: `load_document()` returns decoded text, newline style,
+  BOM state, permissions, and the file-change fingerprint.
+- `_inedit/storage.py`: `save_document()` performs conflict checking and
+  atomic replacement, then returns the refreshed document snapshot needed for
+  another save.
+- `_inedit/storage.py`: `write_auto_save()` and `remove_auto_save()` maintain a
+  fingerprinted, mode-`0600` `#filename#` recovery snapshot without mutating
+  the target.
+- `_inedit/model.py`: `EditorState` tracks the document, original text,
+  automatic-height mode, requested and effective heights, transient views and
+  prompts, status message, armed discard confirmation, successful-write
+  history, recovery snapshot and warning state, and prepared final summary.
+- `_inedit/presentation.py`: pure functions calculate height and render the
+  status and final-summary rows.
+- `_inedit/application.py`: `EditorController` constructs the editing, Help,
+  and command areas, search toolbar, status control, conditional layout,
+  styles, and key bindings.
+- `_inedit/terminal.py`: `run_editor()` performs preflight checks, runs the
+  application, and maps outcomes to exit statuses.
+
+The facade re-exports the established import surface and injects its save,
+recovery, and timer hooks into the controller. Internal modules never import
+the facade, preventing circular dependencies.
 
 The central layout is an `HSplit` containing a dynamic editor/help body and a
 one-row footer. The footer conditionally displays the search toolbar, vi Ex

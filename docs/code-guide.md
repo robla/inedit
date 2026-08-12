@@ -1,22 +1,28 @@
 # Reading the `inedit` code
 
-`inedit.py` is still one importable script, but it has four intentional layers.
-Read them in this order:
+`inedit.py` is the executable and compatibility facade. The implementation is
+in the deliberately internal `_inedit` package. Read it in this order:
 
-1. `main()` owns process concerns: arguments, TTY checks, terminal setup,
-   signals, application execution, diagnostics, and exit status.
-2. The data classes and file functions own document policy. Start with
-   `Document`, then read `load_document()`, `save_document()`, and the three
-   auto-save functions. None of these require a terminal.
-3. The height, summary, and status functions are pure calculations. Their
-   return values depend only on their arguments and are tested directly.
-4. `EditorController` owns the prompt-toolkit application. Its constructor
-   creates widgets; named methods implement lifecycle transitions; and
+1. `_inedit/model.py` defines errors, enums, and data classes. It imports only
+   the standard library and contains no file or terminal operations.
+2. `_inedit/storage.py` owns decoding, loading, conflicts, explicit saves, and
+   recovery files. Start with `Document`, `load_document()`, and
+   `save_document()`; none require a terminal.
+3. `_inedit/presentation.py` contains Help text and pure height, summary, and
+   status calculations.
+4. `_inedit/application.py` contains `EditorController`. Its constructor
+   creates widgets, named methods implement lifecycle transitions, and
    `install_bindings()` is the complete application-level keymap.
+5. `_inedit/terminal.py` owns TTY checks, signals, the cursor guard,
+   application execution, diagnostics, and process exit status.
+6. `inedit.py` re-exports the established import surface, wires replaceable
+   side effects into the controller, and supplies `main()`.
 
-`build_application()` is deliberately a small factory around the controller.
-Prompt-toolkit continues to own ordinary buffer editing, selection, undo,
-search state, vi state, rendering, and terminal input decoding.
+`build_application()` remains a small public factory around the controller.
+`EditorDependencies` makes save, recovery, and timer seams explicit without
+letting the controller know about the facade. Prompt-toolkit continues to own
+ordinary buffer editing, selection, undo, search state, vi state, rendering,
+and terminal input decoding.
 
 ## State to keep straight
 
@@ -49,12 +55,15 @@ search state, vi state, rendering, and terminal input decoding.
 
 | Change | Primary location |
 |---|---|
-| Decoding, paths, conflicts, permissions, saving | document/file functions |
-| Status text, truncation, final summary | pure formatting functions |
-| Save, exit, Help, Ex, height, external editor | `EditorController` method |
-| Application-level key | `install_bindings()` plus the named method |
+| Data shape or shared expected error | `_inedit/model.py` |
+| Arguments or `INEDIT_HEIGHT` | `_inedit/cli.py` |
+| Decoding, paths, conflicts, permissions, saving | `_inedit/storage.py` |
+| Help, status text, truncation, final summary | `_inedit/presentation.py` |
+| Save, exit, Help, Ex, height, external editor | `_inedit/application.py` |
+| Application-level key | `EditorController.install_bindings()` |
 | Ordinary text editing behavior | prompt-toolkit configuration or binding |
-| Startup, signals, process status | `main()` and terminal helpers |
+| Startup, signals, process status | `_inedit/terminal.py` |
+| Re-export or replaceable dependency wiring | `inedit.py` |
 
 A key change is incomplete until both mode-specific Help text and the README
 agree with `install_bindings()`. A filesystem change should be tested without
@@ -72,7 +81,6 @@ changes user-visible lifecycle behavior.
   behavior.
 - `PtyIntegrationTests`: terminal byte streams, retained display, and signals.
 
-The next low-risk structural step is to move these established layers into a
-small internal package while keeping `inedit.py` as the executable facade.
-That split should follow, not precede, the controller boundary so it remains a
-mostly mechanical move with behavior protected by the current tests.
+The next maintenance step is to make the implemented command registry drive
+the mode-specific Help text, then split the test module along these same
+boundaries. Neither change should alter the public facade or editor behavior.

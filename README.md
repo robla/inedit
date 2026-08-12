@@ -16,6 +16,10 @@ start with the short [code-reading guide](docs/code-guide.md).
 
 ## Starting the editor
 
+Until installable packaging is added, keep `inedit.py` beside the `_inedit/`
+directory from the source checkout; copying the script by itself is not
+sufficient.
+
 ```text
 inedit.py [--height ROWS|auto] [--vi] [--no-line-numbers] FILE
 ```

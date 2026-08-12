@@ -182,12 +182,12 @@ Why: generated cases can find Unicode, newline, truncation, and state-machine
 failures missed by examples.  Done: generate safe temp-directory round trips,
 paths, terminal text, and edit/undo/save sequences without emitting controls.
 
-*** TODO [#B] t0006.5 Move the established layers into small internal modules
+*** DONE [#B] t0006.5 Move the established layers into small internal modules
 Why: the controller removes closure coupling, but a roughly two-thousand-line
-=inedit.py= still makes navigation and ownership harder than necessary.  Done:
-keep =inedit.py= as the executable/import facade and move model, storage,
-presentation, controller, and terminal-startup code along existing seams;
-preserve public imports and behavior while making the move mostly mechanical.
+=inedit.py= still made navigation and ownership harder than necessary.  Done:
+=inedit.py= is now the executable/import facade over internal model, CLI,
+storage, presentation, application, and terminal modules; explicit dependency
+wiring preserves its replaceable save and timer seams.
 
 *** TODO [#C] t0006.6 Split the test suite along the same responsibility boundaries
 Why: one large test module obscures which contract a failure protects.  Done:
