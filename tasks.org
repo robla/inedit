@@ -167,10 +167,15 @@ large closure and several booleans.  Done: =EditorController= now owns named
 transitions and widget lifecycle, =EditorView= makes modal states exclusive,
 and prompt-toolkit still owns buffer editing.
 
-*** TODO [#B] t0006.2 Make the implemented keymap the source for help and documentation
-Why: bindings, two help constants, and documentation can drift.  Done: define
-concise command metadata once where practical and validate mode-specific help,
-especially the absence of Emacs-only commands in vi help.
+*** TODO [#B] t0006.2 Extract a declarative command registry into =_inedit/bindings.py=
+Why: =install_bindings()= and the two =HELP_TEXT= constants are maintained by
+hand in parallel, and nothing stops them from drifting; this is the single
+biggest "was this actually reviewed" tell in the codebase.  Done: define each
+command once (key(s), mode filter, target method, one-line description) in a
+new =_inedit/bindings.py=, have =install_bindings()= mechanically register
+=KeyBindings= from that table, and generate both mode-specific help bodies
+from the same data instead of maintaining =EMACS_HELP_TEXT=/=VI_HELP_TEXT= by
+hand. Validate that generated vi help omits Emacs-only commands.
 
 *** TODO [#B] t0006.3 Add static typing and audit prompt-toolkit API dependencies
 Why: =Any= events and low-level search helpers obscure compatibility risk.
@@ -189,10 +194,35 @@ Why: the controller removes closure coupling, but a roughly two-thousand-line
 storage, presentation, application, and terminal modules; explicit dependency
 wiring preserves its replaceable save and timer seams.
 
+*** TODO [#B] t0006.7 Extract widget construction and rendering into =_inedit/view.py=
+Why: =EditorController= (895 lines) still combines widget/layout construction,
+status and final-summary rendering, save/exit/height/Ex/external-editor
+transitions, and key-binding installation in one class; it is now the largest
+module by a wide margin and the main remaining place a reviewer has to hold
+too much in their head at once.  Done: move widget construction
+(=TextArea=/=SearchToolbar=/=Window= setup), =build_layout()=, and the
+rendering callbacks (=status_fragments()=, =final_summary_fragments()=) into
+a new =_inedit/view.py=. Keep the dependency direction one-way: bindings
+(t0006.2) call into the controller, the controller commands the view, and the
+view reads only =_inedit/model.py= state -- it must never import the
+controller back. Record this direction explicitly in code-guide.md so it
+survives the next edit.
+
+*** TODO [#C] t0006.8 Reassess =EditorController= after t0006.2 and t0006.7 land
+Why: the remaining controller (save, exit, Help, Ex, height, search, and
+external-editor transitions) is one state machine and should not be split
+merely to reduce line count -- that would scatter behavior without improving
+it.  Done: after the bindings and view extractions, measure what remains; pull
+out auto-save scheduling or external-editor execution as a separate service
+only if doing so simplifies a concrete dependency or testability problem, and
+write down the decision (including "no further split needed") either way.
+
 *** TODO [#C] t0006.6 Split the test suite along the same responsibility boundaries
-Why: one large test module obscures which contract a failure protects.  Done:
-group argument, document/storage, auto-save, presentation/state, and PTY tests
-without weakening the end-to-end coverage or duplicating fixtures.
+Why: one large test module obscures which contract a failure protects, but
+splitting it before t0006.2/t0006.7/t0006.8 settle would mean redoing the
+split.  Done: once those boundaries are stable, group argument, document/
+storage, auto-save, presentation/state, and PTY tests without weakening the
+end-to-end coverage or duplicating fixtures.
 
 ** TODO [#A] t0007 Make save-result feedback transient
 Recommendation: reuse the trailing state-word slot.  After =Ctrl-S= or =:w=,
