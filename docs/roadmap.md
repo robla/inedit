@@ -133,36 +133,29 @@ cursor and undo behavior for a successful returned edit.
 
 The maintenance refactor separates named application transitions in
 `EditorController`, represents mutually exclusive views with `EditorView`, and
-keeps one current `Document` snapshot. The implementation now lives in small
+keeps one current `Document` snapshot. The implementation now lives in focused
 model, CLI, storage, presentation, application, and terminal modules while
-`inedit.py` remains the executable compatibility facade. That split moved the
-easy pieces out cleanly, but left `_inedit/application.py` as an 895-line
-module that still combines widget construction, rendering, application-level
-lifecycle transitions, and key-binding installation — currently the largest
-file by a wide margin and the main place a reader still has to hold too much
-in their head at once.
+`inedit.py` remains the executable compatibility facade. The main remaining
+concentration is `_inedit/application.py`, which still combines widget
+construction, rendering, application-level lifecycle transitions, and key
+registration.
 
-The next maintenance sequence, in order, is: extract a declarative command
-registry into `_inedit/bindings.py` so `install_bindings()` and both
-mode-specific Help texts are generated from one table instead of maintained
-by hand in parallel (t0006.2); extract widget construction and rendering into
-`_inedit/view.py`, keeping the dependency direction one-way — bindings call
-the controller, the controller commands the view, the view reads only
-`_inedit/model.py` state and never imports the controller back (t0006.7);
-reassess what remains of `EditorController` and split lifecycle transitions
-into separate services only if doing so simplifies a concrete dependency
-rather than merely shortening the file (t0006.8); then split the test module
-along the same stabilized boundaries (t0006.6). After that, add useful static
-typing, audit prompt-toolkit API use, and add property/adversarial tests for
-encoding, Unicode display, paths, and edit/save state transitions.
+The next maintenance sequence is intentionally limited. First, centralize
+inedit-owned bindings and their Help metadata while leaving prompt-toolkit's
+inherited commands under prompt-toolkit's control (t0006.2). Then extract the
+widgets, layout, and rendering into a view that depends on model and
+presentation state but not the concrete controller (t0006.7). Reassess the
+remaining controller and split it only for a concrete dependency or testing
+benefit (t0006.8), then split the tests along the stable boundaries (t0006.6).
 
 "Thin layer over prompt_toolkit" is worth keeping as a design claim, but it
 should mean that prompt_toolkit still owns the editing engine — buffer state,
 cursor motion, undo, search, and low-level rendering — not that the
-surrounding module is short. `inedit.py` supplying file lifecycle, layout,
-key bindings, and save policy around that engine is a legitimate, inspectable
-amount of code; the goal of the sequence above is that it reads as
-deliberately organized rather than accreted.
+surrounding module is short. Production code is already roughly 2,400 lines
+excluding tests. That is acceptable only while the responsibilities remain
+easy to trace: line count is a warning signal, not a target, and a cohesive
+large module is preferable to several pass-through objects or speculative
+services.
 
 ## Product roadmap after release blockers
 
@@ -516,10 +509,12 @@ the facade, preventing circular dependencies.
 finished decomposing: `EditorController` still owns widget construction,
 rendering, key-binding installation, and every lifecycle transition. Tasks
 t0006.2, t0006.7, and t0006.8 in [tasks.org](../tasks.org) track splitting it
-into `_inedit/bindings.py` (declarative command registry, generates Help),
-`_inedit/view.py` (widgets, layout, rendering), and a smaller
-`EditorController` in `_inedit/application.py` that becomes the composition
-root wiring state, view, controller, and bindings together.
+into `_inedit/bindings.py` for inedit-owned command metadata and
+`_inedit/view.py` for widgets, layout, and rendering. `application.py` remains
+the composition root during those extractions and may continue to contain the
+controller. Task t0006.8 decides whether moving or further splitting that
+controller would clarify a real dependency; no additional layer is required
+merely for symmetry.
 
 The central layout is an `HSplit` containing a dynamic editor/help body and a
 one-row footer. The footer conditionally displays the search toolbar, vi Ex

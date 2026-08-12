@@ -81,6 +81,8 @@ changes user-visible lifecycle behavior.
   behavior.
 - `PtyIntegrationTests`: terminal byte streams, retained display, and signals.
 
-The next maintenance step is to make the implemented command registry drive
-the mode-specific Help text, then split the test module along these same
-boundaries. Neither change should alter the public facade or editor behavior.
+The next maintenance step is to centralize inedit-owned key registration and
+its matching Help metadata. Prompt-toolkit-owned commands remain inherited
+behavior and should not acquire shadow bindings just to fit the registry. A
+later view extraction is worthwhile only if it reduces the controller's
+dependencies without adding a generic UI framework or pass-through objects.
