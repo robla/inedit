@@ -376,3 +376,36 @@ filename prompt from t0015.2.
 
 Done: Help describes the chosen rule and PTY tests cover successful, canceled,
 and failed first saves plus every save-and-exit command.
+
+** TODO [#C] t0016 Align viewport controls with Handrail UX guidelines  :editing:display:
+Handrail is a framework of UX guidelines that may become a library one day,
+but for now is just a set of nano-, Emacs-, and CUA-aligned guidelines for TUI
+applications.  This task adopts useful conventions locally; it does not add a
+Handrail package dependency or require a future shared library.
+
+Land t0016.1 before t0016.2 so every released state retains manual height
+control.  Preserve =Ctrl-X= as Exit throughout, matching inedit and nano.
+
+*** TODO [#C] t0016.1 Add =C-^= Resize mode without changing =Ctrl-X= Exit
+Use =C-^=, received by traditional terminals as the same =0x1e= byte as
+=C-6=, to enter a transient Resize mode.  Up makes the bottom-anchored editor
+taller, Down makes it shorter, =a= restores automatic content-fit sizing, and
+=m= selects the maximum safe inline height.  The first manual arrow keeps the
+current behavior of disabling automatic growth for the invocation.
+
+=C-^=, Enter, or =Ctrl-C= leaves Resize mode; =Ctrl-X= still runs the ordinary
+Exit workflow from inside the mode.  Show a compact mode-specific footer and
+Help entry that teach both =C-^= and =C-6=.  Cover the raw control byte,
+terminal clamping, numeric height overrides, auto restoration, repeated mode
+entry, and normal/abnormal terminal cleanup in unit, pipe-input, and PTY tests.
+
+*** TODO [#C] t0016.2 Repurpose =Alt-Up=/=Alt-Down= for viewport scrolling
+After t0016.1 lands, remove the direct height bindings and use these keys to
+scroll the active editor, Help, search, or vi-command viewport without changing
+its logical cursor or selection.  Stop before the anchor would leave the
+visible region, and handle wrapped lines plus top and bottom boundaries.
+
+Update both editing-mode Help texts, =README.md=, architecture guidance, and
+the existing height/scroll PTY coverage in the same change.  Do not change
+automatic sizing, numeric =--height=/=INEDIT_HEIGHT= behavior, or retained
+final-frame policy as part of the key migration.
